@@ -13,6 +13,7 @@ Offline (no reader):
   python -m hid_rm.cli decode <payload-hex>          # decode an Artemis response
   python -m hid_rm.cli decode-snmp <hex>             # parse an SNMP Report
   python -m hid_rm.cli tech <leak_report.json>       # credential technologies (KeyType terms)
+  python -m hid_rm.cli settings [category]            # list reader config settings (name<->OID)
   python -m hid_rm.cli fuzz-list                      # list robustness cases
 
 Live over BLE (needs `bleak`):
@@ -54,6 +55,16 @@ def _split_verbose(args):
 
 def _apdu_frame(payload):
     return framing.frame(framing.build_apdu(INS, payload))
+
+
+def _oid_bytes(oid_or_name):
+    """Resolve a config OID given as a setting name, a short hex config OID, or a
+    dotted OID -> DER OID *content* bytes for the SNMP varbind."""
+    from . import config_oids, oid as oidmod
+    s = config_oids.resolve(oid_or_name)          # name -> hex OID (or passthrough)
+    if all(c in "0123456789abcdefABCDEF" for c in s) and len(s) % 2 == 0:
+        return bytes.fromhex(s)                    # hex OID content (reader's short form)
+    return oidmod.encode(s)                        # dotted OID
 
 
 def cmd_show(a):
@@ -223,7 +234,7 @@ async def cmd_config_get(mac, dotted_oid, auth_key, priv_key, user, verbose=Fals
     rep = await _discover_engine(c, rx, ev, verbose)
     if not rep:
         await c.disconnect(); print("discovery failed (no engine params) -- reader unreachable?"); return
-    msg = snmpv3.build_get(oidmod.encode(dotted_oid), engine_id=bytes.fromhex(rep["engine_id"]),
+    msg = snmpv3.build_get(_oid_bytes(dotted_oid), engine_id=bytes.fromhex(rep["engine_id"]),
                            user_name=user.encode(), engine_boots=rep["engine_boots"],
                            engine_time=rep["engine_time"], auth_key=ak, priv_key=pk)
     apdu = framing.build_apdu(framing.INS_GET_DATA, msg)
@@ -237,8 +248,11 @@ async def cmd_config_get(mac, dotted_oid, auth_key, priv_key, user, verbose=Fals
         print(f"response failed to verify/decrypt: {e}");
         if verbose: print("  raw:", data.hex())
         return
+    from . import config_oids
+    label = config_oids.describe(config_oids.resolve(dotted_oid))
+    tag = f"{label['label']} [{label['name']}]" if label.get("known") else dotted_oid
     for vb in r["varbinds"]:
-        print(f"{dotted_oid} = {vb['value'].hex() if vb['value'] else '<empty>'}")
+        print(f"{tag} = {vb['value'].hex() if vb['value'] else '<empty>'}")
     if verbose:
         print(f"  (engineBoots={r['engine_boots']} engineTime={r['engine_time']})")
 
@@ -254,7 +268,7 @@ async def cmd_config_set(mac, dotted_oid, value_hex, auth_key, priv_key, user, v
     rep = await _discover_engine(c, rx, ev, verbose)
     if not rep:
         await c.disconnect(); print("discovery failed"); return
-    msg = snmpv3.build_set(oidmod.encode(dotted_oid), bytes.fromhex(value_hex),
+    msg = snmpv3.build_set(_oid_bytes(dotted_oid), bytes.fromhex(value_hex),
                            engine_id=bytes.fromhex(rep["engine_id"]), user_name=user.encode(),
                            engine_boots=rep["engine_boots"], engine_time=rep["engine_time"],
                            auth_key=ak, priv_key=pk)
@@ -328,7 +342,7 @@ async def cmd_config_probe(mac, dotted_oid, verbose=False):
     rep = await _discover_engine(c, rx, ev, verbose)
     if not rep:
         await c.disconnect(); print("discovery failed"); return
-    msg = snmpv3.build_get(oidmod.encode(dotted_oid), engine_id=bytes.fromhex(rep["engine_id"]),
+    msg = snmpv3.build_get(_oid_bytes(dotted_oid), engine_id=bytes.fromhex(rep["engine_id"]),
                            user_name=b"", engine_boots=rep["engine_boots"],
                            engine_time=rep["engine_time"])  # no keys -> noAuthNoPriv
     apdu = framing.build_apdu(framing.INS_GET_DATA, msg)
@@ -573,6 +587,9 @@ def main(argv):
         from . import technology
         rep = json.load(open(a[0]))
         print(technology.render(rep, verbose=verbose))
+    elif cmd == "settings":
+        from . import config_oids
+        print(config_oids.render_catalog(a[0] if a else None))
     elif cmd == "fuzz-list":
         for name, frags, note in fuzz.cases():
             print(f"{name:32} {sum(len(f) for f in frags):4}B  {note}")

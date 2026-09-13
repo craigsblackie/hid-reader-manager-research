@@ -1009,3 +1009,26 @@ live validation needs a real reader's keys, which are yours to supply.
 - *With keys*: full authenticated read **and write** of the config MIB, entirely
   from `hid_rm`, no app and no cloud at management time — implemented, pending
   your reader's keys to exercise live.
+
+## 24. Config-item OID map — settings by name
+
+Mapped the reader's config MIB to human-readable settings:
+`hid_rm/config_oids.py` holds 61 named config-item OIDs extracted 1:1 from the
+`public const string …_OID = "<hex>"` constants in `HidGlobal.ArtemisManager`,
+each with a plain label, a category, and a `dangerous` flag (mode/bootloader/key
+settings). Examples: `OSDP_CONFIGURATION=0301070151`, `LED_COLOR=030107010A`,
+`MEDIA_OUTPUT=030107012A` (Wiegand/format), `DESFIRE_EV3=0301070140`,
+`SEOS_PACS_CONFIG=030107020205`, `VELOCITY_CHECK=030107012E` (anti-passback),
+`SIGNO_BLE_PERMANENT_DISABLE=030107030A21`, `READER_MODE=03000701`.
+
+```
+python -m hid_rm.cli settings [category]     # list all settings (name <-> OID)
+python -m hid_rm.cli config-get <MAC> OSDP_CONFIGURATION <authKey> <privKey> <user>
+python -m hid_rm.cli config-set <MAC> LED_COLOR <valHex> <authKey> <privKey> <user>
+```
+
+`config-get`/`config-set`/`config-probe` now accept a **setting name**, the
+short hex config OID, or a dotted OID interchangeably (`_oid_bytes` resolves via
+`config_oids`), and `config-get` prints the human label of what it read. These
+are the reader's short internal config OIDs; on the wire the app routes SETs for
+them through its DeterministicProvisioning prefix path (noted in the module).
