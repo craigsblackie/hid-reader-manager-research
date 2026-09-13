@@ -959,3 +959,53 @@ Picopass — natively emulable by the Flipper, and already read from a `.picopas
 credential via seader+SAM), if and only if the reader is configured to accept
 that technology. That is a different credential than the mobile SEOS key, and a
 separate decision.
+
+## 23. Managing the reader without the app — authenticated SNMP built
+
+Goal (clarified): read config and *manage* the reader without HID Reader
+Manager. The management plane is **SNMPv3 over the BLE data characteristic**,
+and the decompiled code pins down exactly what it takes:
+
+- `SnmpV3.SetConfiguration(authKey, privKey, engineId, username)` sets the USM
+  keys; the keys come from **`FetchELITEConfigurationAsync(engineId, username,
+  keyRefs, boardRev)`** — an authenticated call to HID's **Origo cloud**, per
+  reader. There is **no offline derivation** (the app ships engineIds/usernames,
+  not keys). So management needs *your* reader's keys, obtained through your own
+  Origo/EliteSoft org access — that is the only non-reimplementable piece.
+- Everything else is now reimplemented in `hid_rm/snmpv3.py`. The reader's USM
+  is standard-ish with two HID quirks, both decoded from the assembly and
+  matched:
+  - **auth = HMAC-SHA1-96** (`AuthSMAC`: key⊕ipad/opad, SHA-1, 12-byte MAC over
+    the message with the auth field zeroed) — standard.
+  - **priv = AES-128-CBC** (`ConfAES`), zero-padded, **CBC not CFB** (the RFC-3826
+    standard is CFB — this is the non-standard "MsCrypto" variant), IV =
+    `engineBoots(4) || engineTime(4) || privParams/salt(8)`.
+  - **security model = 257/258** in msgGlobalData (not the standard USM value 3).
+
+### Tooling (both with-keys and keyless)
+
+```
+# with your reader's Origo-issued keys — full read/write, no app:
+python -m hid_rm.cli config-get <MAC> <dotted-oid> <authKeyHex> <privKeyHex> <user>
+python -m hid_rm.cli config-set <MAC> <dotted-oid> <valueHex> <authKeyHex> <privKeyHex> <user>
+
+# keyless — map what's readable/refused without keys:
+python -m hid_rm.cli config-probe <MAC> <dotted-oid>     # noAuthNoPriv GET
+python -m hid_rm.cli snmp-discover <MAC>                  # engineId/boots/time
+python -m hid_rm.cli enumerate <MAC>                      # the unauthenticated config leak
+```
+
+Each `config-get/set` connects, runs discovery to get the live
+engineId/boots/time, builds the authenticated GET/SET with the custom USM, wraps
+it in a `GET_DATA`/`PUT_DATA` APDU, fragments it over BLE, and verifies+decrypts
+the reply. The crypto is validated by a build/parse round-trip
+(`snmpv3.parse_secured_response` recovers the OID/value and the HMAC verifies);
+live validation needs a real reader's keys, which are yours to supply.
+
+**Bottom line for the two tiers:**
+- *No keys*: read the config the reader volunteers (technologies, PACS ADF OIDs,
+  admin modes, engine params) — implemented and working. Config **writes** and
+  full MIB reads are refused.
+- *With keys*: full authenticated read **and write** of the config MIB, entirely
+  from `hid_rm`, no app and no cloud at management time — implemented, pending
+  your reader's keys to exercise live.

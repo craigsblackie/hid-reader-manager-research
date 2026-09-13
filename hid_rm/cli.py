@@ -21,6 +21,8 @@ Live over BLE (needs `bleak`):
   python -m hid_rm.cli core <MAC> <name>              # send a core read, decode reply
   python -m hid_rm.cli locate <MAC> [seconds] [color]  # "find reader": flash + beep it
   python -m hid_rm.cli snmp-discover <MAC>
+  python -m hid_rm.cli config-get <MAC> <oid> <authkey> <privkey> <user>   # authenticated read
+  python -m hid_rm.cli config-set <MAC> <oid> <val> <authkey> <privkey> <user>  # authenticated write
   python -m hid_rm.cli send <MAC> <apdu-hex>
   python -m hid_rm.cli fuzz <MAC> [name]              # robustness test, watch for crash
   python -m hid_rm.cli emulate <MAC> [cooldown_sec]   # log reader's own discovery sequence
@@ -175,6 +177,134 @@ async def cmd_locate(mac, seconds=3.0, color="blue", beep=True, verbose=False):
         return
     for f in got:
         print("  <", f.hex(), " ", seos.describe(f))
+
+
+async def _snmp_exchange(c, rx, ev, apdu, timeout=4.0):
+    """Send an ISO7816 APDU (SNMP-carrying) with ProtocolV1 BLE fragmentation,
+    then reassemble the reader's fragmented reply and return the APDU data."""
+    frame = framing.frame(apdu)
+    for frag in framing.ble_fragment(frame):
+        await c.write_gatt_char(DATA_CHAR_UUID, frag, response=False)
+        await asyncio.sleep(0.02)
+    got = await _drain(rx, ev, timeout)
+    if not got:
+        return None
+    body = framing.ble_reassemble(got)
+    if not body:
+        return None
+    try:
+        _, data, _ = framing.parse_response(body)
+        return data
+    except Exception:
+        return body
+
+
+async def _discover_engine(c, rx, ev, verbose=False):
+    apdu = framing.build_apdu(INS, snmpv3.build_discovery())
+    data = await _snmp_exchange(c, rx, ev, apdu, timeout=3.0)
+    if not data:
+        return None
+    rep = snmpv3.parse_report(data)
+    if verbose:
+        print(f"  engineId={rep['engine_id']} boots={rep['engine_boots']} time={rep['engine_time']}")
+    return rep
+
+
+async def cmd_config_get(mac, dotted_oid, auth_key, priv_key, user, verbose=False):
+    """Authenticated config READ: discover engine params, then an SNMPv3 GET with
+    your reader's Origo-issued auth/priv keys (see PROTOCOL.md §3). Keys are raw
+    hex; supply them for a reader you own -- they are not derivable offline."""
+    from . import oid as oidmod
+    ak, pk = bytes.fromhex(auth_key), bytes.fromhex(priv_key)
+    c, rx, ev, disc = await _connect(mac)
+    await _drain(rx, ev, 1.5)
+    rep = await _discover_engine(c, rx, ev, verbose)
+    if not rep:
+        await c.disconnect(); print("discovery failed (no engine params) -- reader unreachable?"); return
+    msg = snmpv3.build_get(oidmod.encode(dotted_oid), engine_id=bytes.fromhex(rep["engine_id"]),
+                           user_name=user.encode(), engine_boots=rep["engine_boots"],
+                           engine_time=rep["engine_time"], auth_key=ak, priv_key=pk)
+    apdu = framing.build_apdu(framing.INS_GET_DATA, msg)
+    data = await _snmp_exchange(c, rx, ev, apdu)
+    await c.disconnect()
+    if not data:
+        print("no response to authenticated GET (wrong keys, or write/read gated?)"); return
+    try:
+        r = snmpv3.parse_secured_response(data, auth_key=ak, priv_key=pk)
+    except Exception as e:
+        print(f"response failed to verify/decrypt: {e}");
+        if verbose: print("  raw:", data.hex())
+        return
+    for vb in r["varbinds"]:
+        print(f"{dotted_oid} = {vb['value'].hex() if vb['value'] else '<empty>'}")
+    if verbose:
+        print(f"  (engineBoots={r['engine_boots']} engineTime={r['engine_time']})")
+
+
+async def cmd_config_set(mac, dotted_oid, value_hex, auth_key, priv_key, user, verbose=False):
+    """Authenticated config WRITE: SNMPv3 SET with your reader's keys. DANGER --
+    this changes reader configuration; only run against a reader you own and
+    understand the OID/value for."""
+    from . import oid as oidmod
+    ak, pk = bytes.fromhex(auth_key), bytes.fromhex(priv_key)
+    c, rx, ev, disc = await _connect(mac)
+    await _drain(rx, ev, 1.5)
+    rep = await _discover_engine(c, rx, ev, verbose)
+    if not rep:
+        await c.disconnect(); print("discovery failed"); return
+    msg = snmpv3.build_set(oidmod.encode(dotted_oid), bytes.fromhex(value_hex),
+                           engine_id=bytes.fromhex(rep["engine_id"]), user_name=user.encode(),
+                           engine_boots=rep["engine_boots"], engine_time=rep["engine_time"],
+                           auth_key=ak, priv_key=pk)
+    apdu = framing.build_apdu(framing.INS_PUT_DATA, msg)
+    data = await _snmp_exchange(c, rx, ev, apdu)
+    await c.disconnect()
+    if not data:
+        print("no response to authenticated SET"); return
+    try:
+        r = snmpv3.parse_secured_response(data, auth_key=ak, priv_key=pk)
+        print(f"SET acknowledged for {dotted_oid}")
+        if verbose:
+            for vb in r["varbinds"]:
+                print(f"  {vb['oid']} = {vb['value'].hex() if vb['value'] else '<empty>'}")
+    except Exception as e:
+        print(f"response failed to verify/decrypt: {e}")
+        if verbose: print("  raw:", data.hex())
+
+
+async def cmd_config_probe(mac, dotted_oid, verbose=False):
+    """Keyless probe: send a noAuthNoPriv SNMPv3 GET for an OID and report what
+    the reader does -- maps the boundary of what config is readable WITHOUT the
+    Origo-issued keys. Most config OIDs return a Report/authorizationError; any
+    that return a value are readable unauthenticated."""
+    from . import oid as oidmod
+    c, rx, ev, disc = await _connect(mac)
+    await _drain(rx, ev, 1.5)
+    rep = await _discover_engine(c, rx, ev, verbose)
+    if not rep:
+        await c.disconnect(); print("discovery failed"); return
+    msg = snmpv3.build_get(oidmod.encode(dotted_oid), engine_id=bytes.fromhex(rep["engine_id"]),
+                           user_name=b"", engine_boots=rep["engine_boots"],
+                           engine_time=rep["engine_time"])  # no keys -> noAuthNoPriv
+    apdu = framing.build_apdu(framing.INS_GET_DATA, msg)
+    data = await _snmp_exchange(c, rx, ev, apdu)
+    await c.disconnect()
+    if not data:
+        print(f"{dotted_oid}: no response (reader ignored the unauthenticated GET)"); return
+    # Try to interpret: a Report PDU (0xA8) = refused/needs auth; a Response with a value = readable.
+    try:
+        r = snmpv3.parse_secured_response(data, verify=False)
+        vbs = r["varbinds"]
+        if vbs and any(vb["value"] for vb in vbs):
+            print(f"{dotted_oid}: READABLE without keys ->",
+                  ", ".join(vb["value"].hex() for vb in vbs if vb["value"]))
+        else:
+            print(f"{dotted_oid}: reader answered but returned no value (likely refused / needs auth)")
+    except Exception:
+        # likely a Report PDU (engine params only) -> refused
+        print(f"{dotted_oid}: refused unauthenticated (reader replied with a Report/error, needs keys)")
+    if verbose:
+        print("  raw response:", data.hex())
 
 
 async def cmd_send(mac, hexstr, verbose=False):
@@ -411,6 +541,15 @@ def main(argv):
         asyncio.run(cmd_probe(a[0], verbose=verbose))
     elif cmd == "core":
         asyncio.run(cmd_core(a[0], a[1], verbose=verbose))
+    elif cmd == "config-get":
+        # config-get <MAC> <dotted-oid> <auth_key_hex> <priv_key_hex> <user>
+        asyncio.run(cmd_config_get(a[0], a[1], a[2], a[3], a[4], verbose=verbose))
+    elif cmd == "config-set":
+        # config-set <MAC> <dotted-oid> <value_hex> <auth_key_hex> <priv_key_hex> <user>
+        asyncio.run(cmd_config_set(a[0], a[1], a[2], a[3], a[4], a[5], verbose=verbose))
+    elif cmd == "config-probe":
+        # config-probe <MAC> <dotted-oid>  (keyless noAuthNoPriv read attempt)
+        asyncio.run(cmd_config_probe(a[0], a[1], verbose=verbose))
     elif cmd == "locate":
         asyncio.run(cmd_locate(a[0], seconds=float(a[1]) if len(a) > 1 else 3.0,
                                 color=a[2] if len(a) > 2 else "blue", verbose=verbose))
