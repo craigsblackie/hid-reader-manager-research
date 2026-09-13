@@ -86,7 +86,8 @@ static const uint8_t standard_seos_base[10] = {0xA0, 0x00, 0x00, 0x04, 0x40, 0x0
  * plain 9000, so a single session exercises several cases automatically as
  * the reader retries. Config data (OIDs/AIDs) is still parsed regardless of
  * which case is used, via handle_apdu() before the reply is chosen. ---- */
-#define FUZZ_MODE 1
+#define FUZZ_MODE 0 /* AKE-capture build: always reply 9000 to keep the reader talking as far into the SEOS exchange as possible */
+#if FUZZ_MODE
 typedef struct {
     const char* name;
     const uint8_t* bytes;
@@ -112,6 +113,7 @@ static const FuzzCase fuzz_cases[] = {
     {"9000 (control)", fz_sw_9000, sizeof(fz_sw_9000)},
 };
 #define FUZZ_CASE_COUNT (sizeof(fuzz_cases) / sizeof(fuzz_cases[0]))
+#endif /* FUZZ_MODE */
 
 /* Plain-English gloss for each known technical AID name, so the app can
  * explain what the reader offered without the user needing to know what an
@@ -205,6 +207,15 @@ typedef struct {
     BitBuffer* tx_buffer;
 
     Storage* storage;
+    /* Raw APDU transcript of the reader's commands (reader->emulated card),
+     * captured full-hex so a live tap records the reader's post-SELECT SEOS
+     * exchange -- crucially the authenticated key exchange (AKE) challenge the
+     * reader issues once it thinks a credential is present. Kept OUT of
+     * ReconState so it isn't copied onto the stack by save_log's snapshot. */
+    char transcript[3072];
+    uint16_t transcript_len;
+    uint16_t transcript_apdu_count;
+
     bool running;
     volatile bool dirty; /* set by the NFC callback thread, drained by the GUI-update
                             cadence in the main loop -- avoids flooding view_port_update()
@@ -277,11 +288,35 @@ static bool state_add_aid(ReconState* state, const char* aid, const char* englis
  * "always answer 9000" responder. Everything the user sees (screen and
  * last_event) is described in plain English -- raw OID/AID technical detail
  * is still kept for the saved log, but is not the primary output. ---- */
+/* Append one reader command APDU to the raw transcript (full hex), so a live
+ * capture records the reader's SEOS AKE challenge sequence. Caller holds the
+ * mutex. */
+static void transcript_add(HidReconApp* app, const uint8_t* apdu, size_t len) {
+    if((size_t)app->transcript_len + 8 >= sizeof(app->transcript)) return; /* full */
+    app->transcript_apdu_count++;
+    int n = snprintf(app->transcript + app->transcript_len,
+                     sizeof(app->transcript) - app->transcript_len, "%02u< ",
+                     (unsigned)(app->transcript_apdu_count % 100));
+    if(n > 0) app->transcript_len += (uint16_t)n;
+    for(size_t i = 0; i < len; i++) {
+        if((size_t)app->transcript_len + 4 >= sizeof(app->transcript)) break;
+        n = snprintf(app->transcript + app->transcript_len,
+                     sizeof(app->transcript) - app->transcript_len, "%02X", apdu[i]);
+        if(n > 0) app->transcript_len += (uint16_t)n;
+    }
+    if((size_t)app->transcript_len + 2 < sizeof(app->transcript)) {
+        app->transcript[app->transcript_len++] = '\r';
+        app->transcript[app->transcript_len++] = '\n';
+        app->transcript[app->transcript_len] = '\0';
+    }
+}
+
 static void handle_apdu(HidReconApp* app, const uint8_t* apdu, size_t len) {
     furi_mutex_acquire(app->mutex, FuriWaitForever);
     ReconState* state = &app->state;
     state->exchange_count++;
     state->phase = PhaseActive;
+    transcript_add(app, apdu, len);
 
     if(len >= 5 && apdu[1] == 0xA5) {
         /* SELECT ADF: CLA INS P1 P2 Lc [ 06 len OID ]* -- the reader is
@@ -615,6 +650,25 @@ static void save_log(HidReconApp* app) {
                 snapshot.aid_english[i]);
             storage_file_write(file, buf, n);
         }
+
+        /* --- Raw reader-command transcript: every APDU the reader sent, full
+         * hex. This is where the SEOS authenticated key exchange (AKE)
+         * challenge lands once the reader believes a credential is present --
+         * the bytes a real credential (or a key/SAM oracle) would have to
+         * answer. Written from app (not the stack snapshot); listener is
+         * already stopped by the time save_log runs, so no concurrent writer. */
+        n = snprintf(
+            buf, sizeof(buf),
+            "\r\nRaw reader-command transcript (%u APDUs, reader->card):\r\n",
+            app->transcript_apdu_count);
+        storage_file_write(file, buf, n);
+        if(app->transcript_len > 0) {
+            storage_file_write(file, app->transcript, app->transcript_len);
+        } else {
+            n = snprintf(buf, sizeof(buf), "(none captured this session)\r\n");
+            storage_file_write(file, buf, n);
+        }
+
         FURI_LOG_I(TAG, "Saved log to %s", LOG_PATH);
     } else {
         FURI_LOG_W(TAG, "Failed to open %s for writing", LOG_PATH);

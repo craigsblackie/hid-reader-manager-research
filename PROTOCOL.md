@@ -907,3 +907,44 @@ non-exportable — so it is unreachable from `hid_rm`/Flipper by construction, n
 by missing effort (see [MOBILE_KEYS.md](MOBILE_KEYS.md)). The tooling therefore
 "operates like Reader Manager" for the entire unauthenticated surface, and is
 explicit about where the auth wall begins rather than pretending past it.
+
+## 22. SEOS credential emulation — live capture, and the wall
+
+Goal: emulate the credential so the reader authenticates it. Built a full raw
+APDU transcript into the Flipper `hid_recon` app (it now records every
+reader->card command, FUZZ_MODE off so it replies a stable 9000) and captured
+the reader's live NFC credential-hunt against an emulated STANDARD_SEOS card.
+Full capture in `leak_reports/nfc_seos_exchange_capture.txt`.
+
+### What the reader does (NFC)
+
+`SELECT STANDARD_SEOS` → `SELECT ADF` (lists its configured PACS OIDs — the same
+config leak seen over BLE) → **`90 5A 00 00 03 <3 bytes>`** (a proprietary HID
+command, CLA `0x90` INS `0x5A`, sent twice with data `000000` then `B0BBBB`) →
+on our junk `9000` it **abandons SEOS** and cycles to the next credential type:
+the HID mobile AID (`A0000006 76…`), then `MOBILE_SEOS_ADMIN_CARD`, then
+`OPERATION_SELECTOR`. This closes the earlier open item (§16): the full `90 5A`
+command is now captured, not just its first bytes.
+
+### Why the AKE is unreachable, and why emulation is blocked
+
+The reader never issues its SEOS **authenticated key exchange (AKE)** challenge,
+because it never gets valid responses to `90 5A` / the SEOS ADF selection. Even
+if we reverse-engineered those framing responses (obfuscated in the app), the
+AKE itself is an AES/ECC challenge that only the **credential's keys** can
+answer. We don't have them, and — critically — **the attached SAM cannot supply
+them**: it is a *reader-side* (terminal) CCID SAM (seader drives it over
+UART/CCID to *read* credentials, which is how the `.credential` files were
+produced). A reader SAM authenticates *to* cards; it does not expose a card-side
+"answer this challenge as credential X" primitive. So it can't close the loop
+for emulation.
+
+Net: full SEOS mobile-credential emulation is blocked by the same cryptographic
+wall as everything else (MOBILE_KEYS.md) — the key is non-exportable and the
+available SAM is the wrong side of the exchange. What *is* achievable is
+characterizing the reader's demand precisely (done) and, separately, emulating a
+**weaker credential technology the reader may also accept** (iCLASS legacy /
+Picopass — natively emulable by the Flipper, and already read from a `.picopass`
+credential via seader+SAM), if and only if the reader is configured to accept
+that technology. That is a different credential than the mobile SEOS key, and a
+separate decision.
