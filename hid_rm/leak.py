@@ -118,6 +118,11 @@ class LeakCollector:
         lines.append(f"Admin/management mode present: {'yes' if admin_aids else 'not observed'}"
                       + (f" ({', '.join(n for n, _ in admin_aids)})" if admin_aids else ""))
         lines.append(f"Result: {gloss}")
+
+        # Technology posture in Reader Manager's own vocabulary.
+        from . import technology
+        lines.append("")
+        lines.append(technology.render(r, verbose=verbose))
         lines.append("")
         lines.append("(No credentials, keys, or invite codes were used — this reader answers this")
         lines.append(" much to any BLE connection that replies with a plain ISO7816 success code.)")

@@ -879,3 +879,31 @@ firmware, and a deliberate decision for the device owner to make. The PC path
 (`hid_rm locate`) remains the practical way to drive locate today; the Flipper
 app is complete and correct and will work the moment it runs on a Full-stack
 device (or any build added to its address table).
+
+## 21. Reader Manager feature parity — what the tooling covers, and the auth wall
+
+"Operate like HID Reader Manager" splits cleanly along the SEOS-admin
+authentication line. Reader Manager's operation surface (from
+`HidGlobal.ArtemisManager`) maps onto the tooling like this:
+
+| Reader Manager operation | Transport/auth | `hid_rm` / Flipper |
+| --- | --- | --- |
+| Discover configured PACS/SEOS credential objects (OIDs) | unauth discovery loop | ✅ `leak` / `enumerate`; Flipper `hid_recon` (NFC) |
+| Enumerate admin/updater/operation modes (AIDs) | unauth discovery loop | ✅ `leak` / `enumerate` / `hid_recon` |
+| Report supported credential technologies | unauth (partial) | ✅ `tech` / in `leak` output — KeyType vocabulary (§MOBILE_KEYS) |
+| "Find/locate reader" (LED + beep) | unauth, BLE client | ✅ `hid_rm locate` (PC). Flipper: coded, blocked by Light BLE stack (§20) |
+| Device/version/board/UID reads (`GetCoreVersion`, `GetReaderInfo`, …) | session, mostly gated on this reader (§9) | ⚠️ payloads built (`core`, `show core`); blocked pre-auth on the test unit |
+| Robustness / fault behaviour | unauth | ✅ `fuzz` (BLE), `hid_recon` FUZZ_MODE (NFC) |
+| **Read full configuration** (`ReadConfigurationItemsAsync`) | **SEOS-admin auth** | ❌ requires a mobile admin key (§MOBILE_KEYS) |
+| **Write configuration / DCID** (`WriteConfigurationItemsAsync`, `WriteDCIDConfigurationItemsAsync`) | **SEOS-admin auth** | ❌ gated |
+| **Key rolling** (`WriteKeyRollingSNMPMessageAsync`) | **SEOS-admin auth** | ❌ gated |
+| **Add/remove mobile access keyset** (enable/disable `MobileAccess`, wallets, iCLASS, MIFARE) | **SEOS-admin auth** | ❌ gated (see MOBILE_KEYS.md §4) |
+| Firmware update (`Get*FirmwareInfo`, bootload SNMP) | SEOS-admin auth | ❌ gated |
+
+**Bottom line:** everything above the double line is unauthenticated and the
+tooling now covers it in Reader Manager's own vocabulary. Everything below
+requires the SEOS admin **mobile key**, which is cloud-issued, device-bound and
+non-exportable — so it is unreachable from `hid_rm`/Flipper by construction, not
+by missing effort (see [MOBILE_KEYS.md](MOBILE_KEYS.md)). The tooling therefore
+"operates like Reader Manager" for the entire unauthenticated surface, and is
+explicit about where the auth wall begins rather than pretending past it.

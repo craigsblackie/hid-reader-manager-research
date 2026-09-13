@@ -12,6 +12,7 @@ Offline (no reader):
   python -m hid_rm.cli list                          # list core commands
   python -m hid_rm.cli decode <payload-hex>          # decode an Artemis response
   python -m hid_rm.cli decode-snmp <hex>             # parse an SNMP Report
+  python -m hid_rm.cli tech <leak_report.json>       # credential technologies (KeyType terms)
   python -m hid_rm.cli fuzz-list                      # list robustness cases
 
 Live over BLE (needs `bleak`):
@@ -392,6 +393,11 @@ def main(argv):
     elif cmd == "decode-snmp":
         for k, v in snmpv3.parse_report(bytes.fromhex(a[0].replace(" ", ""))).items():
             print(f"  {k}: {v}")
+    elif cmd == "tech":
+        import json
+        from . import technology
+        rep = json.load(open(a[0]))
+        print(technology.render(rep, verbose=verbose))
     elif cmd == "fuzz-list":
         for name, frags, note in fuzz.cases():
             print(f"{name:32} {sum(len(f) for f in frags):4}B  {note}")

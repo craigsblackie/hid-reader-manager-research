@@ -41,6 +41,13 @@ keys are cloud-issued per organisation.
   instrumentation): the Genesis (factory-default) privacy key, the
   `KeyChangeGenerator` weak-RNG finding, and why neither yields a practical
   break of a real deployment.
+- **[`MOBILE_KEYS.md`](MOBILE_KEYS.md)** — feasibility review of *using* or
+  *removing* HID mobile keys: what they are (`KeyType` model, AAMK endpoint,
+  SEOS admin key), how Reader Manager uses one to authenticate reader
+  management, and why neither using nor removing them is reachable from this
+  tooling (cloud-issued, device-bound, non-exportable). Includes what the
+  unauthenticated discovery loop *can* still tell you about a reader's
+  mobile-key posture.
 - **[`FINDINGS.md`](FINDINGS.md)** — the raw research log: APK/manifest
   analysis, the `.NET` assembly store format (XABA/LZ4), hardcoded
   analytics/Firebase secrets found in the shipped app, and the full sequence of
