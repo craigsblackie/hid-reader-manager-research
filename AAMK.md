@@ -211,3 +211,65 @@ next `hid_rm.cli emulate` run, and spacing subsequent attempts out — repeated 
 reconnects are themselves worth noting as a low-effort availability lever (see
 PROTOCOL.md §7 fuzzing) but shouldn't be run against your own hardware more than
 needed to characterise it.
+
+## 7. SEOS AKE mutual-authentication bypass — investigated, no path found
+
+Followed up on whether the "Genesis" pattern that made the SEOS *privacy* layer
+trivially open (§1, a hardcoded all-zero AES key) has an equivalent on the
+*authentication* side — since authentication, not privacy, is what actually
+gates ADF/config access and what a reader checks before treating a presented
+credential as valid.
+
+### What was checked
+- **`GenesisAsymmetricAuthenticationKeyset`** (`com.assaabloy.seos.access.auth`,
+  decompiled): unlike the privacy keyset, this class does **not** hold a
+  hardcoded EC private key as a constant. Both constructors take the private
+  key/certificate as parameters; the method that actually produces the real key
+  material, `b(Context, int, int, int)`, is protected by heavy **mixed
+  boolean-arithmetic (MBA) obfuscation** — dozens of XOR/AND/OR/shift
+  operations standing in for what should be simple arithmetic, plus
+  reflection-based method resolution (`e.b()`/`e.e()`) for every non-trivial
+  call. This is a hallmark of a commercial Android app-protector, not
+  ProGuard-style renaming — jadx cannot produce usable output even with
+  `--show-bad-code --comments-level debug` (the deeper attempt did get further
+  into the method body than the default pass, but the body itself is the MBA
+  soup, not a recoverable secret). Defeating this by hand would need
+  SMT-based deobfuscation tooling (e.g. MBA-Blast/Triton-style symbolic
+  execution) or dynamic instrumentation — both out of scope here (no Frida, as
+  established earlier in this research).
+- **Is this class even used?** No. `grep`ing the entire decompiled app for
+  `GenesisAsymmetricAuthenticationKeyset` finds it **only in its own definition
+  file** — it is never instantiated anywhere. Combined with confirming that
+  `MobileKeys.ADMIN_SESSION_PARAMS` (the session builder actually used for SEOS
+  admin operations) sets **only** a `GenesisPrivacyKeyset`, with no
+  authentication keyset at all — there is no live code path in this app that
+  uses a default/Genesis authentication key for anything. It's dead code, in
+  the same category as the unused `CONFIGURATION` BLE extension constants found
+  in §11 of PROTOCOL.md.
+
+### The more important scoping point
+Even setting the obfuscation aside, this class is on the wrong side of the
+relationship for what "bypassing AKE" would need to mean for a door-reader
+attack. AKE is mutual: a **terminal** (the entity requesting access, backed by
+a certificate chain) authenticates to a **card** (the credential), and the card
+authenticates back. `GenesisAsymmetricAuthenticationKeyset` supplies the
+*phone's own terminal identity* for when the app itself reads or provisions a
+real external card — it has nothing to do with how a **reader** validates an
+*incoming* credential. The keys a reader checks when a phone (or an emulated
+card) presents itself are held in **the reader's own SAM** (Secure Access
+Module) and validated against HID's card-issuance PKI — infrastructure that
+lives in the reader's firmware and HID's provisioning backend, not in this
+consumer Android app at all. No amount of static analysis of the APK recovers
+key material that was never shipped in it.
+
+### Conclusion
+This is consistent with, and closes out, everything else found this session:
+- Live testing (PROTOCOL.md §6–§9) already showed the reader's own SAM
+  consistently rejects (`SAM_REJECTED`) any exchange it can't cryptographically
+  validate, regardless of how the ISO7816/APDU layer is driven.
+- The app-side Genesis authentication keyset is unused, and even if it weren't,
+  it authenticates the *phone*, not the *reader's* acceptance criteria.
+- **No SEOS AKE mutual-authentication bypass was found.** The privacy layer
+  (§1) is open by design (SEOS's own spec makes GDF/metadata discovery public);
+  the authentication layer is not, and nothing recoverable from this app
+  changes that.
