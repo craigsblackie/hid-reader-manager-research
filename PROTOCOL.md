@@ -767,3 +767,70 @@ command is BLE-only by nature — it is a client-to-reader instruction sent over
 an active connection, not something meaningful over the Flipper's passive
 NFC card-emulation listener (which only ever receives commands *from* the
 reader, never sends commands to it).
+
+## 20. "Find reader" on the Flipper Zero — BLE-central app (no firmware rebuild)
+
+The locate command needs the sender to act as a BLE **central** (GATT client):
+connect out to the reader, discover its command characteristic, write to it.
+This turned out to be the hard part on a Flipper, and the investigation is worth
+recording because the conclusion is non-obvious.
+
+### Finding: stock/Momentum firmware exposes no central role to apps
+
+Flipper's released SDK exposes only **peripheral/GATT-server** BLE to apps
+(advertising, `ble_gatt_service_add`, the serial profile, the extra-beacon
+spoofer, and radio DTM test modes). Every `aci_gap_*` / `aci_gatt_*` function
+— and even the raw `hci_send_req` transport primitive — is **absent from the
+app-accessible API symbol table** (the `elf_api_table` the `.fap` loader
+resolves against; disabled entries are filtered out of it). Confirmed by
+enumerating the entire table: zero central/client symbols. So a normal app,
+built against the SDK, simply cannot open an outbound BLE connection. There is
+also no BLE-central path through the serial CLI (`bt hci_info` only) or the JS
+runtime. The capability exists in the STM32WB co-processor stack (full BLE
+stack, central-capable) — it's just not wired through the core-1 firmware for
+apps to reach.
+
+### The one no-rebuild path: call `hci_send_req` by absolute address
+
+The `aci_*`/`hci_le_*` functions are thin parameter-packers that build a command
+buffer and call `hci_send_req` (verified in the ST copro source, e.g.
+`aci_gap_create_connection` → OGF 0x3f/OCF 0x9c). `hci_send_req` **is** present
+in the firmware binary at a fixed address. So an app can:
+
+1. Call `hci_send_req` via a raw function pointer at its known flash address.
+2. Reimplement the handful of wrappers it needs — here `hci_le_create_connection`
+   (OGF 0x08/OCF 0x00d — raw HCI, so no GAP central-role init is required),
+   `aci_gatt_disc_char_by_uuid` (0x3f/0x116), `aci_gatt_write_without_resp`
+   (0x3f/0x123), plus create-connection-cancel and disconnect.
+3. Receive the async events (connection-complete, char-discovery, proc-complete)
+   through `ble_event_dispatcher_register_svc_handler` — which *is* an exposed
+   app API, so event delivery is clean and supported.
+
+Crucially, `hci_send_req` **self-serializes**: it acquires the OS's BLE command
+mutex inside its own status callback (`NotifyCmdStatus(CmdBusy)` →
+`ble_app_hci_status_not_handler` → `furi_mutex_acquire(hci_mtx)`). So calling it
+from an app thread is automatically mutually-exclusive with the OS's own BLE
+traffic — this is what makes the approach safe rather than merely possible.
+
+### Safety gate (the address is firmware-build-specific)
+
+`hci_send_req`'s address differs per firmware build (dev tip `d3f89dfe` had it at
+`0x0801b8cd`; the device's release `mntm-012`/`e1784e74` at `0x0801b8ac`). A
+wrong address is a jump into garbage → hardfault. The app therefore pins to
+`mntm-012` and, before making any raw call, reads the 16 bytes at that address
+(flash is memory-mapped/readable) and compares them to that build's known
+`hci_send_req` prologue. Mismatch → the app shows an "unsupported firmware"
+screen and does nothing. A version mismatch is thus harmless, not a crash. Other
+builds are supported by adding their address + prologue to a small table.
+
+### What's built
+
+`flipper_locate/` — a from-scratch `.fap` (`hid_locate.c`, built with the same
+Momentum `ufbt` SDK as the NFC recon app). d-pad selects a locate pattern
+(colour/duration preset), OK runs connect → discover → write → disconnect. The
+Artemis payloads are the same bytes validated byte-for-byte against the vendor
+encoder (§19); CRC/framing/fragmentation is ported from `hid_rm`. Builds clean
+and passes `APPCHK` (the loader's API-import validation). Live on-device
+verification against the physical reader is the remaining step (deferred for the
+same BLE-rest reason as §19, and because a first run of raw firmware-internal
+calls is best done watched, on the device that's physically on the reader).

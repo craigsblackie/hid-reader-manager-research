@@ -1,0 +1,9 @@
+App(
+    appid="hid_locate",
+    name="HID Locate Reader",
+    apptype=FlipperAppType.EXTERNAL,
+    entry_point="hid_locate_app",
+    stack_size=4 * 1024,
+    fap_category="Bluetooth",
+    requires=["gui"],
+)

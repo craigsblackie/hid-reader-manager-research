@@ -8,3 +8,7 @@ hid_rm/keychange_candidates.csv
 # Flipper build output (compiled from flipper_app/*.c — not source)
 flipper_app/dist/
 flipper_app/.ufbt/
+flipper_locate/dist/
+flipper_locate/.ufbt/
+flipper_locate/.vscode/
+flipper_app/.vscode/
