@@ -543,6 +543,44 @@ static void save_log(HidReconApp* app) {
             n = snprintf(buf, sizeof(buf), "  - %s\r\n", snapshot.aid_english[i]);
             storage_file_write(file, buf, n);
         }
+
+        /* --- Credential technologies in HID Reader Manager's own vocabulary
+         * (KeyType), mirroring hid_rm's technology report. What the
+         * unauthenticated discovery loop proves vs. what stays behind the
+         * SEOS-admin (mobile-key) auth wall. See MOBILE_KEYS.md. --- */
+        n = snprintf(
+            buf, sizeof(buf),
+            "\r\nCredential technologies (Reader Manager KeyType terms):\r\n");
+        storage_file_write(file, buf, n);
+        if(total_creds > 0) {
+            n = snprintf(
+                buf, sizeof(buf),
+                "  [x] Seos -- configured (SEOS/PACS credential objects seen)\r\n");
+            storage_file_write(file, buf, n);
+        }
+        if(snapshot.admin_mode_seen) {
+            n = snprintf(
+                buf, sizeof(buf),
+                "  [x] MobileAdmin -- reader expects a mobile admin card\r\n");
+            storage_file_write(file, buf, n);
+        }
+        n = snprintf(
+            buf, sizeof(buf),
+            "\r\nMobile keys: %s\r\n",
+            snapshot.admin_mode_seen ?
+                "reader is configured to USE mobile keys (mobile admin card offered)." :
+                "no mobile-key admin AID seen this session.");
+        storage_file_write(file, buf, n);
+        n = snprintf(
+            buf, sizeof(buf),
+            "Not determinable without an authenticated (mobile-key) read:\r\n"
+            "  iCLASS/SE/SR, MIFARE DESFire EV1/EV3, Google/Apple/Samsung wallets\r\n");
+        storage_file_write(file, buf, n);
+        n = snprintf(
+            buf, sizeof(buf),
+            "  (the admin mobile key is cloud-issued & non-exportable; see MOBILE_KEYS.md)\r\n");
+        storage_file_write(file, buf, n);
+
         n = snprintf(
             buf,
             sizeof(buf),
