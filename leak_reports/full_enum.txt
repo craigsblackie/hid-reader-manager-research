@@ -1,0 +1,69 @@
+========================================================================
+HID READER RECONNAISSANCE SUMMARY
+========================================================================
+target: C0:60:33:15:2B:31    generated: 2026-09-13T14:40:48
+
+[1] BLE identity: name='Seos' rssi=-73 advertised_services=['00009800-0000-1000-8000-00177a000002']
+
+[2] GATT surface: 3 service(s)
+    service 00001800-0000-1000-8000-00805f9b34fb
+      char 00002a01-0000-1000-8000-00805f9b34fb  ['read']
+      char 00002a04-0000-1000-8000-00805f9b34fb  ['read']
+      char 00002a00-0000-1000-8000-00805f9b34fb  ['read']
+    service 00001801-0000-1000-8000-00805f9b34fb
+    service 00009800-0000-1000-8000-00177a000002
+      char 0000aa00-0000-1000-8000-00177a000002  ['write-without-response', 'notify']
+
+[3] Spontaneous frames on connect: 2
+      8100a4040010a000000440000101000100004705
+      402b0300
+
+[4] Config leak (UNAUTHENTICATED, proven live): 7 PACS OID(s), 3 mode AID(s), final_status=SAM_REJECTED
+      OID 1.3.6.1.4.1.29240.1.1.2.1.24.1.6.1.1.10664  [pacs_adf_candidate]
+      OID 1.3.6.1.4.1.29240.1.1.2.1.24.1.1.11571.2  [pacs_adf_candidate]
+      OID 1.3.6.1.4.1.29240.1.1.2.1.24.1.1.11571.7  [pacs_adf_candidate]
+      OID 1.3.6.1.4.1.29240.1.1.2.1.24.1.1.163.11433.2  [pacs_adf_candidate]
+      OID 1.3.6.1.4.1.29240.1.1.2.1.24.1.1.2.2  [known]
+      OID 1.3.6.1.4.1.29240.1.1.2.1.24.1.1.163.11433.1  [pacs_adf_candidate]
+      OID 1.3.6.1.4.1.29240.1.1.2.1.24.1.1.11571.1  [pacs_adf_candidate]
+      AID STANDARD_SEOS+qualifier(000047052b03)  a0000004400001010001000047052b03
+      AID MOBILE_SEOS_ADMIN_CARD  a000000382002d000101
+      AID OPERATION_SELECTOR  a000000382002f000101
+
+[5/6] Gated-channel probes (Artemis core reads + SNMP discovery):
+      core.get_version_info    IGNORED (blocked, as expected unauthenticated)
+      core.get_reader_info     IGNORED (blocked, as expected unauthenticated)
+      snmp.discovery           IGNORED (blocked, as expected unauthenticated)
+========================================================================
+
+========================================================================
+HID READER — UNAUTHENTICATED CONFIG LEAK REPORT
+========================================================================
+generated: 2026-09-13T14:41:06    rounds observed: 6
+final status: SAM_REJECTED
+
+Configured PACS/SEOS credential OIDs offered (7):
+  - 1.3.6.1.4.1.29240.1.1.2.1.24.1.6.1.1.10664
+      [pacs_adf_candidate] SEOS PACS ADF candidate under STANDARD_PACS_ADF_OID's tree (subtype=6 [subtype 6 (uncommon -- seen once live)], object_id=1.1, variant=10664). Matches no built-in app constant -> this is a customer/deployment-specific SIO object configured on THIS reader, not a generic HID default.
+  - 1.3.6.1.4.1.29240.1.1.2.1.24.1.1.11571.2
+      [pacs_adf_candidate] SEOS PACS ADF candidate under STANDARD_PACS_ADF_OID's tree (subtype=1 [standard PACS subtype], object_id=11571, variant=2). Matches no built-in app constant -> this is a customer/deployment-specific SIO object configured on THIS reader, not a generic HID default.
+  - 1.3.6.1.4.1.29240.1.1.2.1.24.1.1.11571.7
+      [pacs_adf_candidate] SEOS PACS ADF candidate under STANDARD_PACS_ADF_OID's tree (subtype=1 [standard PACS subtype], object_id=11571, variant=7). Matches no built-in app constant -> this is a customer/deployment-specific SIO object configured on THIS reader, not a generic HID default.
+  - 1.3.6.1.4.1.29240.1.1.2.1.24.1.1.163.11433.2
+      [pacs_adf_candidate] SEOS PACS ADF candidate under STANDARD_PACS_ADF_OID's tree (subtype=1 [standard PACS subtype], object_id=163.11433, variant=2). Matches no built-in app constant -> this is a customer/deployment-specific SIO object configured on THIS reader, not a generic HID default.
+  - 1.3.6.1.4.1.29240.1.1.2.1.24.1.1.2.2
+      [known] known constant: STANDARD_PACS_ADF_OID
+  - 1.3.6.1.4.1.29240.1.1.2.1.24.1.1.163.11433.1
+      [pacs_adf_candidate] SEOS PACS ADF candidate under STANDARD_PACS_ADF_OID's tree (subtype=1 [standard PACS subtype], object_id=163.11433, variant=1). Matches no built-in app constant -> this is a customer/deployment-specific SIO object configured on THIS reader, not a generic HID default.
+  - 1.3.6.1.4.1.29240.1.1.2.1.24.1.1.11571.1
+      [pacs_adf_candidate] SEOS PACS ADF candidate under STANDARD_PACS_ADF_OID's tree (subtype=1 [standard PACS subtype], object_id=11571, variant=1). Matches no built-in app constant -> this is a customer/deployment-specific SIO object configured on THIS reader, not a generic HID default.
+
+Application/mode AIDs the reader tried (3):
+  - STANDARD_SEOS+qualifier(000047052b03) a0000004400001010001000047052b03
+  - MOBILE_SEOS_ADMIN_CARD         a000000382002d000101
+  - OPERATION_SELECTOR             a000000382002f000101
+
+Summary:
+  - 1 standard HID OID(s), 6 non-standard/customer-specific SIO object(s) configured on this reader.
+  - All of the above was obtained with NO authentication: connect over BLE, reply 9000 (ISO7816 success) to whatever the reader offers.
+========================================================================

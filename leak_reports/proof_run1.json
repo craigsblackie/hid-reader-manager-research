@@ -1,0 +1,102 @@
+{
+  "generated_at": "2026-09-13T14:00:18",
+  "oids": [
+    {
+      "raw": "1.3.6.1.4.1.29240.1.1.2.1.24.1.6.1.1.10664",
+      "kind": "pacs_adf_candidate",
+      "base": "1.3.6.1.4.1.29240.1.1.2.1.24.1",
+      "subtype": "6",
+      "object_id": "1.1",
+      "variant": "10664",
+      "description": "SEOS PACS ADF candidate under STANDARD_PACS_ADF_OID's tree (subtype=6 [subtype 6 (uncommon -- seen once live)], object_id=1.1, variant=10664). Matches no built-in app constant -> this is a customer/deployment-specific SIO object configured on THIS reader, not a generic HID default."
+    },
+    {
+      "raw": "1.3.6.1.4.1.29240.1.1.2.1.24.1.1.11571.2",
+      "kind": "pacs_adf_candidate",
+      "base": "1.3.6.1.4.1.29240.1.1.2.1.24.1",
+      "subtype": "1",
+      "object_id": "11571",
+      "variant": "2",
+      "description": "SEOS PACS ADF candidate under STANDARD_PACS_ADF_OID's tree (subtype=1 [standard PACS subtype], object_id=11571, variant=2). Matches no built-in app constant -> this is a customer/deployment-specific SIO object configured on THIS reader, not a generic HID default."
+    },
+    {
+      "raw": "1.3.6.1.4.1.29240.1.1.2.1.24.1.1.11571.7",
+      "kind": "pacs_adf_candidate",
+      "base": "1.3.6.1.4.1.29240.1.1.2.1.24.1",
+      "subtype": "1",
+      "object_id": "11571",
+      "variant": "7",
+      "description": "SEOS PACS ADF candidate under STANDARD_PACS_ADF_OID's tree (subtype=1 [standard PACS subtype], object_id=11571, variant=7). Matches no built-in app constant -> this is a customer/deployment-specific SIO object configured on THIS reader, not a generic HID default."
+    },
+    {
+      "raw": "1.3.6.1.4.1.29240.1.1.2.1.24.1.1.163.11433.2",
+      "kind": "pacs_adf_candidate",
+      "base": "1.3.6.1.4.1.29240.1.1.2.1.24.1",
+      "subtype": "1",
+      "object_id": "163.11433",
+      "variant": "2",
+      "description": "SEOS PACS ADF candidate under STANDARD_PACS_ADF_OID's tree (subtype=1 [standard PACS subtype], object_id=163.11433, variant=2). Matches no built-in app constant -> this is a customer/deployment-specific SIO object configured on THIS reader, not a generic HID default."
+    },
+    {
+      "raw": "1.3.6.1.4.1.29240.1.1.2.1.24.1.1.2.2",
+      "kind": "known",
+      "name": "STANDARD_PACS_ADF_OID",
+      "description": "known constant: STANDARD_PACS_ADF_OID"
+    },
+    {
+      "raw": "1.3.6.1.4.1.29240.1.1.2.1.24.1.1.163.11433.1",
+      "kind": "pacs_adf_candidate",
+      "base": "1.3.6.1.4.1.29240.1.1.2.1.24.1",
+      "subtype": "1",
+      "object_id": "163.11433",
+      "variant": "1",
+      "description": "SEOS PACS ADF candidate under STANDARD_PACS_ADF_OID's tree (subtype=1 [standard PACS subtype], object_id=163.11433, variant=1). Matches no built-in app constant -> this is a customer/deployment-specific SIO object configured on THIS reader, not a generic HID default."
+    },
+    {
+      "raw": "1.3.6.1.4.1.29240.1.1.2.1.24.1.1.11571.1",
+      "kind": "pacs_adf_candidate",
+      "base": "1.3.6.1.4.1.29240.1.1.2.1.24.1",
+      "subtype": "1",
+      "object_id": "11571",
+      "variant": "1",
+      "description": "SEOS PACS ADF candidate under STANDARD_PACS_ADF_OID's tree (subtype=1 [standard PACS subtype], object_id=11571, variant=1). Matches no built-in app constant -> this is a customer/deployment-specific SIO object configured on THIS reader, not a generic HID default."
+    }
+  ],
+  "aids": [
+    {
+      "name": "STANDARD_SEOS+qualifier(000047052b03)",
+      "hex": "a0000004400001010001000047052b03"
+    },
+    {
+      "name": "MOBILE_SEOS_ADMIN_CARD",
+      "hex": "a000000382002d000101"
+    },
+    {
+      "name": "OPERATION_SELECTOR",
+      "hex": "a000000382002f000101"
+    }
+  ],
+  "final_status": "SAM_REJECTED",
+  "round_count": 6,
+  "transcript": [
+    {
+      "apdu": "00a4040010a0000004400001010001000047052b0300"
+    },
+    {
+      "apdu": "80a504006606132b0601040181e438010102011801060101d32806122b0601040181e43801010201180101da330206122b0601040181e43801010201180101da330706142b0601040181e438010102011801018123d9290206112b0601040181e43801010201180101020200"
+    },
+    {
+      "apdu": "00a404000aa000000382002d00010100"
+    },
+    {
+      "apdu": "80a504002a06142b0601040181e438010102011801018123d9290106122b0601040181e43801010201180101da330100"
+    },
+    {
+      "apdu": "00a404000aa000000382002f00010100"
+    },
+    {
+      "status": "SAM_REJECTED",
+      "byte": 2
+    }
+  ]
+}

@@ -1,0 +1,9 @@
+App(
+    appid="hid_recon",
+    name="HID Reader Recon",
+    apptype=FlipperAppType.EXTERNAL,
+    entry_point="hid_recon_app",
+    stack_size=4 * 1024,
+    fap_category="NFC",
+    requires=["gui", "storage"],
+)

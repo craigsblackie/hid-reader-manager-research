@@ -1,0 +1,10 @@
+# Python
+__pycache__/
+*.pyc
+
+# Regenerable research output (see AAMK.md for how to reproduce)
+hid_rm/keychange_candidates.csv
+
+# Flipper build output (compiled from flipper_app/*.c — not source)
+flipper_app/dist/
+flipper_app/.ufbt/
