@@ -638,3 +638,49 @@ persistently than earlier in this research, likely from the cumulative number
 of BLE connects across this whole session. Code for the experiment is
 reproducible (see this section's history) and worth another pass after the
 reader has had a longer rest.
+
+## 18. BLE connection lockout — characterized more precisely (possible availability finding)
+
+Following up on the "rate-limit/cooldown" observation from §6.4/AAMK.md with more
+data points from this session: after a cluster of ~8-10 BLE connection attempts
+in a fairly tight window, the reader entered a state where **every subsequent
+connection attempt fails identically** — GATT connects fine, the spontaneous
+`SELECT` frame arrives normally, but the reader then sends an
+`EOT status=MSG_TIMEOUT` **before we ever send a reply**, and this persisted
+across many retries spread over more than 20 minutes of wall-clock time,
+including a verified-normal BLE advertisement (`rssi -76`, same as always — not
+a power/range/hardware issue).
+
+This is a **materially different failure mode from NFC's**, which is worth
+distinguishing precisely rather than conflating as "the same cooldown":
+- **BLE failures are a deliberate reader decision** — the connection and
+  ISO7816 exchange succeed at the protocol level; the reader actively chooses
+  to abort with a specific status code. This looks like real anti-abuse logic.
+- **NFC failures are silent** — no APDU exchange happens at all, consistent
+  with antenna-coupling variance (the RATS/activation handshake simply doesn't
+  complete), not a deliberate reader response.
+
+**Working hypothesis, not yet confirmed**: the lockout window may be
+**self-extending on retry** — i.e. each connection attempt made *during* the
+lockout resets or extends the backoff timer, which would explain why it never
+cleared despite the individual attempts being spaced 1-2 minutes apart (if the
+real base timeout is, say, 60-120s of *total silence*, repeatedly probing every
+60-90s would keep re-triggering it indefinitely). This is exactly the behaviour
+you'd want from a well-designed anti-brute-force mechanism, but it also means
+a well-meaning tester (or a malicious one) doing exactly what this research did
+— periodic reconnect attempts — **could keep a real reader locked out of normal
+BLE credential-read use for as long as they keep probing**, which is worth
+flagging as a potential availability/DoS consideration for responsible
+disclosure alongside the OID/config-leak finding (§8-9). Not confirmed as a
+genuine DoS (would need a controlled test: stop ALL connection attempts for a
+long, precisely-timed idle period, then test once) — recommended as the
+concrete next step before further BLE work.
+
+**Status of this session's two open items pending a real BLE rest period**:
+- §16's full `CLA=0x90 INS=0x5A` capture — pursued via NFC (unaffected by the
+  BLE-specific lockout above) across 10 attempts, 2 partial successes, full
+  bytes still not captured (logging fix is in place and correct, just needs
+  one more good contact).
+- §17's SELECT_ADF FCI-echo experiment — blocked by the BLE lockout
+  characterized above; deliberately not retried further this session to avoid
+  extending it further, per the hypothesis just described.
