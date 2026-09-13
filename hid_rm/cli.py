@@ -23,6 +23,8 @@ Live over BLE (needs `bleak`):
   python -m hid_rm.cli snmp-discover <MAC>
   python -m hid_rm.cli config-get <MAC> <oid> <authkey> <privkey> <user>   # authenticated read
   python -m hid_rm.cli config-set <MAC> <oid> <val> <authkey> <privkey> <user>  # authenticated write
+  python -m hid_rm.cli config-apply <MAC> <msgfile> [read]   # replay a cloud/config-card SNMP package
+  python -m hid_rm.cli config-probe <MAC> <oid>              # keyless (noAuthNoPriv) read test
   python -m hid_rm.cli send <MAC> <apdu-hex>
   python -m hid_rm.cli fuzz <MAC> [name]              # robustness test, watch for crash
   python -m hid_rm.cli emulate <MAC> [cooldown_sec]   # log reader's own discovery sequence
@@ -270,6 +272,49 @@ async def cmd_config_set(mac, dotted_oid, value_hex, auth_key, priv_key, user, v
     except Exception as e:
         print(f"response failed to verify/decrypt: {e}")
         if verbose: print("  raw:", data.hex())
+
+
+async def cmd_config_apply(mac, msgfile, write=True, verbose=False):
+    """Replay a list of pre-built SNMPv3 messages to the reader -- exactly what
+    the app's WriteConfigurationItemsAsync / WriteDCIDConfigurationItemsAsync do:
+    they transmit cloud-generated (Origo/config-card) authenticated SNMP messages
+    over BLE; the app never builds the crypto itself. So if you capture the
+    config package for YOUR reader (from Origo when you generate a config, or off
+    your config card), this applies it with no app and no key derivation.
+
+    `msgfile`: one hex SNMP message per line (# comments allowed). NOTE: SNMPv3
+    has an engineBoots/engineTime freshness window (~150s), so messages built for
+    a *different* session may be rejected as stale -- capture and replay in the
+    same window, or use config-set (with keys) which builds fresh each time."""
+    msgs = []
+    for line in open(msgfile):
+        line = line.strip()
+        if line and not line.startswith("#"):
+            msgs.append(bytes.fromhex(line.replace(" ", "")))
+    if not msgs:
+        print("no messages in file"); return
+    ins = framing.INS_PUT_DATA if write else INS
+    c, rx, ev, disc = await _connect(mac)
+    await _drain(rx, ev, 1.5)
+    if verbose:
+        await _discover_engine(c, rx, ev, verbose=True)
+    ok = 0
+    for i, m in enumerate(msgs):
+        apdu = framing.build_apdu(ins, m)
+        data = await _snmp_exchange(c, rx, ev, apdu)
+        status = "no reply"
+        if data:
+            try:
+                r = snmpv3.parse_secured_response(data, verify=False)
+                status = "reply (" + ("value" if any(v["value"] for v in r["varbinds"]) else "report/ack") + ")"
+                ok += 1
+            except Exception:
+                status = f"reply {len(data)}B (unparsed)"; ok += 1
+        print(f"  msg {i+1}/{len(msgs)}: {status}")
+        if verbose and data:
+            print("    <", data.hex())
+    await c.disconnect()
+    print(f"applied {ok}/{len(msgs)} messages (reader responded)")
 
 
 async def cmd_config_probe(mac, dotted_oid, verbose=False):
@@ -550,6 +595,9 @@ def main(argv):
     elif cmd == "config-probe":
         # config-probe <MAC> <dotted-oid>  (keyless noAuthNoPriv read attempt)
         asyncio.run(cmd_config_probe(a[0], a[1], verbose=verbose))
+    elif cmd == "config-apply":
+        # config-apply <MAC> <msgfile> [read]   replay pre-built SNMP messages
+        asyncio.run(cmd_config_apply(a[0], a[1], write=(len(a) < 3 or a[2] != "read"), verbose=verbose))
     elif cmd == "locate":
         asyncio.run(cmd_locate(a[0], seconds=float(a[1]) if len(a) > 1 else 3.0,
                                 color=a[2] if len(a) > 2 else "blue", verbose=verbose))
