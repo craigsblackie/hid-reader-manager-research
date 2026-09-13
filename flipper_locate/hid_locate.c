@@ -42,6 +42,8 @@
 #include <furi_hal.h>
 #include <gui/gui.h>
 #include <input/input.h>
+#include <storage/storage.h>
+#include <stdarg.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -126,6 +128,27 @@ static uint8_t hid_locate_le_create_connection(const uint8_t peer_addr_le[6], ui
     put16(&p[i], 0x0000); i += 2; /* Min_CE_Length */
     put16(&p[i], 0x0000); i += 2; /* Max_CE_Length */
     return hid_locate_send(0x08, 0x00d, p, i);
+}
+
+/* ACI GAP Create Connection (OGF 0x3f, OCF 0x9c) -- the vendor GAP-layer
+ * connect. Unlike raw HCI LE Create Connection (which the ST 5.x stack rejected
+ * with "unknown command"), this is the abstraction the stack actually exposes;
+ * it internally issues whichever underlying HCI command the stack supports. */
+static uint8_t hid_locate_gap_create_connection(const uint8_t peer_addr_le[6], uint8_t peer_addr_type) {
+    uint8_t p[24];
+    int i = 0;
+    put16(&p[i], 0x0060); i += 2; /* LE_Scan_Interval */
+    put16(&p[i], 0x0030); i += 2; /* LE_Scan_Window */
+    p[i++] = peer_addr_type;
+    memcpy(&p[i], peer_addr_le, 6); i += 6;
+    p[i++] = 0x00; /* Own_Address_Type: public */
+    put16(&p[i], 0x0018); i += 2; /* Conn_Interval_Min */
+    put16(&p[i], 0x0028); i += 2; /* Conn_Interval_Max */
+    put16(&p[i], 0x0000); i += 2; /* Conn_Latency */
+    put16(&p[i], 0x01F4); i += 2; /* Supervision_Timeout */
+    put16(&p[i], 0x0000); i += 2; /* Min_CE_Length */
+    put16(&p[i], 0x0000); i += 2; /* Max_CE_Length */
+    return hid_locate_send(0x3f, 0x09c, p, i);
 }
 
 /* HCI LE Create Connection Cancel (OGF 0x08, OCF 0x00e) -- abort a pending,
@@ -371,7 +394,38 @@ typedef struct {
     LocateResult result;
     volatile bool running;
     volatile bool exit;
+    char trace[512];
+    size_t trace_len;
 } App;
+
+static void trace_reset(App* app) {
+    app->trace[0] = 0;
+    app->trace_len = 0;
+}
+
+static void trace_add(App* app, const char* fmt, ...) {
+    if(app->trace_len >= sizeof(app->trace) - 1) return;
+    va_list ap;
+    va_start(ap, fmt);
+    int n = vsnprintf(
+        app->trace + app->trace_len, sizeof(app->trace) - app->trace_len, fmt, ap);
+    va_end(ap);
+    if(n > 0) app->trace_len += (size_t)n;
+}
+
+static void save_result(App* app) {
+    Storage* storage = furi_record_open(RECORD_STORAGE);
+    storage_common_mkdir(storage, "/ext/apps_data");
+    storage_common_mkdir(storage, "/ext/apps_data/hid_locate");
+    File* f = storage_file_alloc(storage);
+    if(storage_file_open(
+           f, "/ext/apps_data/hid_locate/last_run.txt", FSAM_WRITE, FSOM_CREATE_ALWAYS)) {
+        storage_file_write(f, app->trace, app->trace_len);
+        storage_file_close(f);
+    }
+    storage_file_free(f);
+    furi_record_close(RECORD_STORAGE);
+}
 
 static const char* result_str(LocateResult r) {
     switch(r) {
@@ -420,6 +474,9 @@ static bool hid_locate_write_frame(App* app, const uint8_t* frame, size_t frame_
     return true;
 }
 
+static bool g_fw_supported = false;
+static bool g_central_supported = false; /* Full BLE stack (central role) present */
+
 static void hid_locate_run(App* app) {
     app->running = true;
     BleCtx* ble = &app->ble;
@@ -430,12 +487,32 @@ static void hid_locate_run(App* app) {
         ble->flags,
         EVT_CONNECTED | EVT_CONN_FAILED | EVT_DISCONNECTED | EVT_CHAR_FOUND | EVT_DISC_DONE);
 
+    trace_reset(app);
+    trace_add(app, "HID Locate run\n");
+    trace_add(app, "fw_gate=%s\n", g_fw_supported ? "OK(mntm-012)" : "MISMATCH");
+    trace_add(app, "radio_stack=%d (1=Light 2=Full)\n", (int)furi_hal_bt_get_radio_stack());
+    trace_add(app, "preset=%s\n", k_presets[app->preset_idx].name);
+
+    /* Plumbing sanity probe: hci_le_rand (OGF 0x08/OCF 0x018) is supported by
+     * every ST BLE stack build. If this returns 0x00 our raw hci_send_req path
+     * works, so a 0x01 on the connect commands below is specifically the Light
+     * stack lacking the central role -- not a bug in our calling convention. */
+    uint8_t rnd_st = hid_locate_send(0x08, 0x018, NULL, 0);
+    trace_add(app, "probe hci_le_rand status=0x%02X\n", rnd_st);
+
     ble->handler = ble_event_dispatcher_register_svc_handler(hid_locate_event_handler, ble);
 
     app->result = ResultConnecting;
     view_port_update(app->view_port);
 
-    uint8_t st = hid_locate_le_create_connection(k_reader_mac_le, 0x00);
+    /* Try the vendor GAP-layer connect first; fall back to raw HCI legacy. */
+    uint8_t st = hid_locate_gap_create_connection(k_reader_mac_le, 0x00);
+    trace_add(app, "gap_create_connection cmd_status=0x%02X\n", st);
+    if(st != 0x00) {
+        uint8_t st2 = hid_locate_le_create_connection(k_reader_mac_le, 0x00);
+        trace_add(app, "hci_le_create_connection cmd_status=0x%02X\n", st2);
+        st = st2;
+    }
     if(st != 0x00) {
         FURI_LOG_E(TAG, "create_connection cmd status 0x%02X", st);
         app->result = ResultFailConnect;
@@ -443,26 +520,32 @@ static void hid_locate_run(App* app) {
     }
     uint32_t f = furi_event_flag_wait(
         ble->flags, EVT_CONNECTED | EVT_CONN_FAILED, FuriFlagWaitAny, 8000);
+    trace_add(app, "connect_wait flags=0x%08lX\n", (unsigned long)f);
     if((f & FuriFlagError) || !(f & EVT_CONNECTED)) {
         FURI_LOG_E(TAG, "connect failed/timeout");
+        trace_add(app, "connect FAILED/timeout\n");
         /* abort the still-pending connection attempt so the controller stops
          * scanning in the background */
         hid_locate_le_create_connection_cancel();
         app->result = ResultFailConnect;
         goto cleanup;
     }
+    trace_add(app, "connected handle=0x%04X\n", ble->conn_handle);
 
     app->result = ResultDiscovering;
     view_port_update(app->view_port);
 
     furi_event_flag_clear(ble->flags, EVT_CHAR_FOUND | EVT_DISC_DONE);
     st = hid_locate_disc_char_by_uuid(ble->conn_handle, k_char_uuid_le);
+    trace_add(app, "disc_char cmd_status=0x%02X\n", st);
     if(st != 0x00) {
         FURI_LOG_E(TAG, "disc_char cmd status 0x%02X", st);
         app->result = ResultFailDiscover;
         goto disconnect;
     }
     f = furi_event_flag_wait(ble->flags, EVT_CHAR_FOUND | EVT_DISC_DONE, FuriFlagWaitAny, 5000);
+    trace_add(app, "disc_wait flags=0x%08lX found=%d vhandle=0x%04X\n",
+        (unsigned long)f, ble->char_found ? 1 : 0, ble->char_value_handle);
     if((f & FuriFlagError) || !ble->char_found) {
         FURI_LOG_E(TAG, "characteristic not found");
         app->result = ResultFailDiscover;
@@ -476,11 +559,9 @@ static void hid_locate_run(App* app) {
         const LocatePreset* preset = &k_presets[app->preset_idx];
         uint8_t frame[64];
         size_t frame_len = hid_locate_frame(preset->payload, preset->len, frame);
-        if(hid_locate_write_frame(app, frame, frame_len)) {
-            app->result = ResultDone;
-        } else {
-            app->result = ResultFailWrite;
-        }
+        bool wok = hid_locate_write_frame(app, frame, frame_len);
+        trace_add(app, "write frame_len=%u ok=%d\n", (unsigned)frame_len, wok ? 1 : 0);
+        app->result = wok ? ResultDone : ResultFailWrite;
     }
 
 disconnect:
@@ -491,6 +572,8 @@ cleanup:
         ble_event_dispatcher_unregister_svc_handler(ble->handler);
         ble->handler = NULL;
     }
+    trace_add(app, "result=%s\n", result_str(app->result));
+    save_result(app);
     app->running = false;
     view_port_update(app->view_port);
 }
@@ -498,8 +581,6 @@ cleanup:
 /* ------------------------------------------------------------------------- */
 /* GUI                                                                       */
 /* ------------------------------------------------------------------------- */
-
-static bool g_fw_supported = false;
 
 static void draw_callback(Canvas* canvas, void* context) {
     App* app = context;
@@ -514,6 +595,14 @@ static void draw_callback(Canvas* canvas, void* context) {
         canvas_draw_str(canvas, 2, 40, "Needs Momentum mntm-012.");
         canvas_draw_str(canvas, 2, 52, "See app source to add a");
         canvas_draw_str(canvas, 2, 62, "build. Back to exit.");
+        return;
+    }
+
+    if(!g_central_supported) {
+        canvas_draw_str(canvas, 2, 26, "BLE Light stack: no");
+        canvas_draw_str(canvas, 2, 36, "central role. Cannot");
+        canvas_draw_str(canvas, 2, 46, "connect out to a reader.");
+        canvas_draw_str(canvas, 2, 60, "Needs Full BLE stack. Back");
         return;
     }
 
@@ -551,6 +640,15 @@ int32_t hid_locate_app(void* p) {
     if(!g_fw_supported) {
         FURI_LOG_E(TAG, "Unsupported firmware: hci_send_req prologue mismatch");
     }
+    /* Central role lives in the co-processor BLE stack. Flipper's default Light
+     * stack is peripheral-only, so connecting out to a reader is impossible
+     * regardless of this app (confirmed live: connect commands return 0x01
+     * "unknown", while a generic hci_le_rand returns 0x00). Only the Full stack
+     * exposes the initiator. */
+    g_central_supported = (furi_hal_bt_get_radio_stack() == FuriHalBtStackFull);
+    if(!g_central_supported) {
+        FURI_LOG_W(TAG, "BLE Light stack: central role unavailable");
+    }
 
     app->view_port = view_port_alloc();
     view_port_draw_callback_set(app->view_port, draw_callback, app);
@@ -567,8 +665,8 @@ int32_t hid_locate_app(void* p) {
 
         if(event.key == InputKeyBack) {
             running = false;
-        } else if(!g_fw_supported) {
-            /* only Back does anything on the unsupported screen */
+        } else if(!g_fw_supported || !g_central_supported) {
+            /* only Back does anything on the unsupported / Light-stack screen */
         } else if(app->running) {
             /* ignore input while a locate is in progress */
         } else if(event.key == InputKeyUp) {

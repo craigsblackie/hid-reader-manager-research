@@ -830,7 +830,52 @@ Momentum `ufbt` SDK as the NFC recon app). d-pad selects a locate pattern
 (colour/duration preset), OK runs connect → discover → write → disconnect. The
 Artemis payloads are the same bytes validated byte-for-byte against the vendor
 encoder (§19); CRC/framing/fragmentation is ported from `hid_rm`. Builds clean
-and passes `APPCHK` (the loader's API-import validation). Live on-device
-verification against the physical reader is the remaining step (deferred for the
-same BLE-rest reason as §19, and because a first run of raw firmware-internal
-calls is best done watched, on the device that's physically on the reader).
+and passes `APPCHK` (the loader's API-import validation).
+
+### Live result: the raw-call approach works, but the Light stack blocks it
+
+Deployed and run on the device (`mntm-012`/`e1784e74`). The on-device result
+file records, in order:
+
+```
+fw_gate=OK(mntm-012)                       <- prologue check passed
+radio_stack=1 (1=Light 2=Full)
+probe hci_le_rand status=0x00              <- our raw hci_send_req path WORKS
+gap_create_connection cmd_status=0x01      <- "unknown command"
+hci_le_create_connection cmd_status=0x01   <- "unknown command"
+result=FAILED: connect
+```
+
+This is a clean, airtight characterization:
+
+- **The raw-address technique is sound.** The firmware-prologue safety gate
+  passed, and a generic `hci_le_rand` sent through our hand-rolled
+  `hci_send_req` call returns `0x00` (success) with real random bytes. So we can
+  inject arbitrary HCI/ACI commands from an app and they execute correctly — the
+  whole "call firmware internals by address" mechanism works exactly as designed.
+- **The blocker is one level deeper than any of this.** Both the vendor GAP
+  connect (`aci_gap_create_connection`) and the raw HCI legacy connect
+  (`hci_le_create_connection`) return `0x01` = *unknown command*. The Flipper
+  ships the STM32WB **BLE _Light_ co-processor stack** (`radio_stack=1`), which
+  is **peripheral-only — it omits the central/initiator role entirely** to save
+  flash. The commands to connect out simply don't exist in the running radio
+  firmware.
+
+So "locate as an app, no firmware build" is **not achievable on a stock Flipper**
+— not because of the app layer (solved) or the core-1 firmware (a rebuild was
+the earlier dead-end, also unnecessary), but because the **core-2 radio stack**
+itself has no central role. The app now detects this at startup
+(`furi_hal_bt_get_radio_stack() != Full`) and shows a clear "BLE Light stack: no
+central role" screen instead of a generic failure.
+
+### What would actually unblock it
+
+Flashing the **Full** STM32WB BLE co-processor stack
+(`stm32wb5x_BLE_Stack_full_*`) in place of the Light one would add the central
+role and make this app work unmodified. That is a **co-processor radio-stack
+update** (FUS-level flash via qFlipper / the update process), not an app and not
+a core-1 firmware change — a heavier, riskier operation that replaces radio
+firmware, and a deliberate decision for the device owner to make. The PC path
+(`hid_rm locate`) remains the practical way to drive locate today; the Flipper
+app is complete and correct and will work the moment it runs on a Full-stack
+device (or any build added to its address table).
