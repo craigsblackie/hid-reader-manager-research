@@ -78,6 +78,41 @@ static const KnownAid known_aids[] = {
 
 static const uint8_t standard_seos_base[10] = {0xA0, 0x00, 0x00, 0x04, 0x40, 0x00, 0x01, 0x01, 0x00, 0x01};
 
+/* ---- NFC robustness/fuzz cases -----------------------------------------
+ * Port of hid_rm/fuzz.py's malformed-reply cases to the NFC transport (the
+ * BLE run of these found no crash; this tests whether the reader's NFC
+ * front-end -- plausibly different silicon/firmware -- is equally robust).
+ * Cycled one per received APDU (FUZZ_MODE=1) instead of always answering
+ * plain 9000, so a single session exercises several cases automatically as
+ * the reader retries. Config data (OIDs/AIDs) is still parsed regardless of
+ * which case is used, via handle_apdu() before the reply is chosen. ---- */
+#define FUZZ_MODE 1
+typedef struct {
+    const char* name;
+    const uint8_t* bytes;
+    size_t len;
+} FuzzCase;
+
+static const uint8_t fz_sw_9000[]      = {0x90, 0x00};
+static const uint8_t fz_sw_0000[]      = {0x00, 0x00};
+static const uint8_t fz_sw_6a82[]      = {0x6A, 0x82};
+static const uint8_t fz_sw_61ff[]      = {0x61, 0xFF};
+static const uint8_t fz_sw_truncated[] = {0x90};
+static const uint8_t fz_fci_lie[]      = {0x6F, 0xFF, 0xAA, 0xAA, 0xAA, 0xAA, 0x90, 0x00};
+static const uint8_t fz_empty[]        = {0};
+
+static const FuzzCase fuzz_cases[] = {
+    {"9000 (control)", fz_sw_9000, sizeof(fz_sw_9000)},
+    {"SW=0000", fz_sw_0000, sizeof(fz_sw_0000)},
+    {"SW=6A82", fz_sw_6a82, sizeof(fz_sw_6a82)},
+    {"SW=61FF (GET RESPONSE)", fz_sw_61ff, sizeof(fz_sw_61ff)},
+    {"truncated (1 byte)", fz_sw_truncated, sizeof(fz_sw_truncated)},
+    {"FCI length lie", fz_fci_lie, sizeof(fz_fci_lie)},
+    {"empty reply", fz_empty, 0},
+    {"9000 (control)", fz_sw_9000, sizeof(fz_sw_9000)},
+};
+#define FUZZ_CASE_COUNT (sizeof(fuzz_cases) / sizeof(fuzz_cases[0]))
+
 /* Plain-English gloss for each known technical AID name, so the app can
  * explain what the reader offered without the user needing to know what an
  * "AID" is. Ordering matches known_aids[] above; STANDARD_SEOS handled
@@ -151,6 +186,8 @@ typedef struct {
 
     uint32_t exchange_count;
     uint32_t field_toggle_count;
+    uint32_t fuzz_index;   /* next fuzz_cases[] entry to use as a reply (FUZZ_MODE) */
+    char fuzz_last_case[32]; /* name of the fuzz case most recently sent, for the log */
     char last_event[LAST_EVENT_LEN]; /* always plain English -- no AIDs/OIDs/hex here */
     SessionPhase phase;
 } ReconState;
@@ -321,17 +358,17 @@ static void handle_apdu(HidReconApp* app, const uint8_t* apdu, size_t len) {
         snprintf(state->last_event, sizeof(state->last_event), "%s", english);
         if(is_new) FURI_LOG_I(TAG, "New mode offered: %s (%s)", english, label);
     } else {
-        /* Some other reader command (rare in practice) -- describe it plainly
-         * on screen, keep the technical detail (instruction byte, length) in
-         * the log only. */
+        /* Some other reader command -- describe it plainly on screen, log the
+         * FULL APDU hex (not just the first 4 bytes) since these are exactly
+         * the ones worth capturing precisely for later analysis. */
         uint8_t ins = len > 1 ? apdu[1] : 0;
-        snprintf(state->last_event, sizeof(state->last_event), "Other reader command received");
-        FURI_LOG_I(TAG, "%s (ins=%02X len=%u: %02X %02X %02X %02X ...)",
-                   state->last_event, ins, (unsigned)len,
-                   len > 0 ? apdu[0] : 0,
-                   len > 1 ? apdu[1] : 0,
-                   len > 2 ? apdu[2] : 0,
-                   len > 3 ? apdu[3] : 0);
+        snprintf(state->last_event, sizeof(state->last_event), "Other reader command (ins=%02X)", ins);
+        char hexbuf[3 * 64 + 1] = {0};
+        size_t hp = 0;
+        for(size_t i = 0; i < len && hp + 3 < sizeof(hexbuf); i++) {
+            hp += snprintf(hexbuf + hp, sizeof(hexbuf) - hp, "%02X ", apdu[i]);
+        }
+        FURI_LOG_I(TAG, "Other command ins=%02X len=%u full=[ %s]", ins, (unsigned)len, hexbuf);
     }
 
     furi_mutex_release(app->mutex);
@@ -353,11 +390,26 @@ static NfcCommand hid_recon_nfc_callback(NfcGenericEvent event, void* context) {
 
         handle_apdu(app, apdu, copy_len);
 
+        bit_buffer_reset(app->tx_buffer);
+#if FUZZ_MODE
+        /* Cycle through malformed replies (fuzz_cases[]) instead of always
+         * answering plain 9000 -- tests reader NFC-stack robustness the same
+         * way hid_rm.fuzz already tested it over BLE. Config data is already
+         * captured above regardless of which reply we send. */
+        furi_mutex_acquire(app->mutex, FuriWaitForever);
+        const FuzzCase* fc = &fuzz_cases[app->state.fuzz_index % FUZZ_CASE_COUNT];
+        app->state.fuzz_index++;
+        strncpy(app->state.fuzz_last_case, fc->name, sizeof(app->state.fuzz_last_case) - 1);
+        app->state.fuzz_last_case[sizeof(app->state.fuzz_last_case) - 1] = '\0';
+        furi_mutex_release(app->mutex);
+        if(fc->len > 0) bit_buffer_copy_bytes(app->tx_buffer, fc->bytes, fc->len);
+        FURI_LOG_I(TAG, "fuzz case -> %s (%u bytes)", fc->name, (unsigned)fc->len);
+#else
         /* Always answer 9000 -- live-proven (PROTOCOL.md) that the reader
          * only checks the trailing status word, not the content. */
-        bit_buffer_reset(app->tx_buffer);
         uint8_t sw[] = {0x90, 0x00};
         bit_buffer_copy_bytes(app->tx_buffer, sw, sizeof(sw));
+#endif
         iso14443_4a_listener_send_block((Iso14443_4aListener*)event.instance, app->tx_buffer);
 
         app->dirty = true;
@@ -421,7 +473,11 @@ static void draw_callback(Canvas* canvas, void* ctx) {
     }
     canvas_draw_str(canvas, 2, 33, line);
 
+#if FUZZ_MODE
+    snprintf(line, sizeof(line), "Fuzz: %s", state->fuzz_last_case);
+#else
     snprintf(line, sizeof(line), "Admin mode: %s", state->admin_mode_seen ? "seen" : "not seen");
+#endif
     canvas_draw_str(canvas, 2, 43, line);
 
     canvas_draw_str(canvas, 2, 53, state->last_event);
@@ -538,6 +594,7 @@ int32_t hid_recon_app(void* p) {
     app->input_queue = furi_message_queue_alloc(8, sizeof(InputEvent));
     app->state.phase = PhaseIdle;
     strncpy(app->state.last_event, "Ready.", sizeof(app->state.last_event) - 1);
+    strncpy(app->state.fuzz_last_case, "(none yet)", sizeof(app->state.fuzz_last_case) - 1);
 
     app->view_port = view_port_alloc();
     view_port_draw_callback_set(app->view_port, draw_callback, app);

@@ -559,3 +559,82 @@ Live-verified: a real capture on this reader (after this change) rendered as
 the plain-English block quoted above, with the technical OID/AID list
 underneath — confirms both the classification logic and the report format work
 against real device data, not just synthetic test input.
+
+## 15. Firmware update — static verification check (negative/inconclusive)
+
+Checked whether the app performs any firmware signature/hash verification before
+transferring an image to the reader's Nordic BLE radio chip (the `FW_UPDATE`
+extension channel, §11). Searched every class in the upgrade pipeline
+(`FwEncryptedPackageStrategy`, `NordicFirmwareTransferStep`,
+`PrepareOneFileFirmwareStep`, `ConfigWriteStep`, `SamFirmwareTransferStep`, and
+the rest of the `IUpgradeStep` chain) for signature/hash/RSA/ECDSA/AES calls.
+
+**Result: none found anywhere in the app-level code.** The app only CRC16-frames
+data (integrity against transmission errors, not authenticity) and relays bytes;
+`FwEncryptedPackageStrategy` just orchestrates *which* artifact to send, it
+doesn't verify anything cryptographically itself.
+
+**This is inconclusive, not a finding of a vulnerability** — real embedded
+secure-boot designs correctly put signature verification on the *device's own*
+bootloader, not the phone app, so a negative result here says nothing about
+whether the reader's Nordic chip rejects unsigned images once it receives them.
+That verification (if it exists) lives in the reader's own firmware, invisible
+to APK analysis, and confirming it either way would need either firmware
+extraction (JTAG/SWD, physical hardware access — out of scope for this
+BLE/NFC-only research) or actually attempting a live firmware update with a
+malformed image (real bricking risk, not attempted). Also lower-priority in
+practice: reaching `FW_UPDATE` requires the same authenticated admin session
+this research has already shown is unreachable unauthenticated — so even a
+confirmed weakness here would sit behind the same wall as everything else.
+
+## 16. NFC fuzzing (Flipper) — robust, plus a genuinely new command found
+
+Extended `flipper_app/hid_recon.c` with an NFC fuzz mode (`FUZZ_MODE`, ported
+from `hid_rm.fuzz`'s BLE cases): instead of always answering `90 00`, it cycles
+through 8 reply strategies (control 9000, `SW=0000`, `SW=6A82`, `SW=61FF`,
+1-byte truncated, an FCI-length lie, an empty reply) on every received APDU,
+logging the case used and the reader's next move. Config data is still parsed
+from the reader's own commands regardless of which reply is sent.
+
+**Result: no crash, hang, or reset found.** One successful live run exercised
+**210 fuzzed exchanges** (141 of one command type, 69 of another — see below)
+over ~30 seconds with every malformed reply, and the session ended with a clean
+auto-exit and resource teardown, matching the BLE fuzz result (§10) — the
+reader's NFC front-end is equally robust to the classes of malformed input
+tested so far.
+
+### New command found — not seen over BLE
+The run surfaced two command types never observed over BLE:
+- **`CLA=0x00 INS=0xC0` (GET RESPONSE)** — 69 occurrences, correctly triggered
+  by the `SW=61FF` fuzz case. Consistent with the BLE-side finding (§9) that the
+  reader implements real ISO7816 response chaining; confirms it on NFC too.
+- **`CLA=0x90 INS=0x5A ...` — 141 occurrences, a genuinely new instruction.**
+  Neither `0x90` nor `0x5A` appears in any previously-documented SEOS APDU set
+  from this research (`SELECT_AID=0xA4, SELECT_ADF=0xA5, AUTHENTICATE=0x87,
+  CORE_ADMIN=0x15, FS_OPS=0xE6, GET_DATA=0xCB/0xCD, PUT_DATA=0xDB/0xDD,
+  GEN_KEYPAIR=0x47, REMOVE=0xED, RESPONSE=0xC0, AMR=0x41`). Only the first 4
+  bytes were captured before the logging was widened to dump the full APDU
+  (`90 5A 00 00`, len=9, so 5 more data bytes are still unseen) — the fix is in
+  place (`flipper_app/hid_recon.c`, full-hex logging on the "other command"
+  path) but a repeat successful NFC contact hasn't landed yet this session to
+  capture the complete bytes. **Open item**: re-run `flipper_app` and grep the
+  device log for `Other command ins=5A` to get the full APDU.
+- A public-registry lookup for the unrelated new AID from §13
+  (`A0 00 00 06 76 60 09 1E 05 2B 03`) found no match in EMV/payment AID
+  databases (expected — those don't cover PACS/access-control RIDs) or general
+  smart-card RID lists searched. **Unidentified**, not a dead end so much as
+  outside the registries checked so far.
+
+## 17. Live BLE follow-up (SELECT ADF response content) — inconclusive this session
+
+Attempted to test whether replying to `SELECT_ADF` with an FCI that echoes back
+`STANDARD_PACS_ADF_OID` (claiming a specific credential match, rather than the
+generic bare `9000` used throughout §6-§9) changes the reader's behaviour --
+e.g. whether it advances toward a real `GET CHALLENGE`/AKE step instead of
+continuing down its candidate list. **Not yet resolved**: every attempt this
+session hit an immediate `MSG_TIMEOUT` with no discovery offer at all -- the
+reader's connection-rate cooldown (§6.4/AAMK.md) appears to have engaged more
+persistently than earlier in this research, likely from the cumulative number
+of BLE connects across this whole session. Code for the experiment is
+reproducible (see this section's history) and worth another pass after the
+reader has had a longer rest.
