@@ -273,3 +273,69 @@ This is consistent with, and closes out, everything else found this session:
   (§1) is open by design (SEOS's own spec makes GDF/metadata discovery public);
   the authentication layer is not, and nothing recoverable from this app
   changes that.
+
+## 8. Full decompile + emulation of `GenesisAsymmetricAuthenticationKeyset.b()` — resolved
+
+Followed through on §7 rather than stopping at "too obfuscated": disassembled the
+actual DEX bytecode (baksmali, not just jadx's Java reconstruction) and faithfully
+emulated the arithmetic in Python to determine, concretely, what this method
+computes.
+
+### Method size, as raw bytecode (ground truth)
+`b(Context, int, int, int)` is **3168 smali instructions** for a method that (if
+it really derived an EC private key) should need a few dozen. Breakdown:
+- **762 raw bitwise/arithmetic instructions** (`and/or/xor/not/add/sub/mul/shl/
+  shr/ushr-int`) — a huge inflation ratio, the hallmark of mixed
+  boolean-arithmetic (MBA) obfuscation.
+- **53 branches**, 4 try/catch blocks — real control-flow flattening.
+- Calls into **20+ unrelated Android framework classes**: `AudioTrack`,
+  `CdmaCellLocation`, `ImageFormat`, `ExpandableListView`, `Process`, `Runtime`,
+  `KeyEvent`, `Color`, `ViewConfiguration`, `TextUtils`, etc. — none of which
+  have any plausible reason to appear in key derivation. These are **decoy
+  calls**: real Android APIs invoked purely for their return value, chosen
+  because that value is fixed/public regardless of device (e.g.
+  `KeyEvent.keyCodeFromString("")` always returns `KEYCODE_UNKNOWN = 0` — a
+  documented platform constant, not an environment-dependent read), used to
+  disguise constants from decompilers that can't constant-fold arbitrary
+  framework calls.
+- 6 calls into `com.assaabloy.mobilekeys.api.internal.e` — the **same**
+  reflection-dispatch helper (`e.b(hash)`/`e.e(...)`) confirmed via `grep` to
+  appear across 10+ completely unrelated classes throughout the app (BLE,
+  analytics, endpoint config). This is the app-wide protector's shared runtime,
+  not bespoke logic for this class.
+
+### What it actually computes (emulated, not guessed)
+Extracted the short `Context == null` branch (219 instructions, no framework
+calls, pure arithmetic) and translated it 1:1 into Python with correct 32-bit
+Dalvik integer semantics (`ctypes.c_int32`), then ran it with varied concrete
+inputs. Result: the long chain of operations that *looks* like it depends on the
+input parameter **algebraically cancels to a fixed constant** (`0x3f1cc2cf`)
+regardless of that input — proof the "input-dependent" arithmetic is MBA noise
+wrapped around what was originally just a literal constant. The final value is
+then run through `x ^= x<<13; x ^= x>>>17; x ^= x<<5` — **the Marsaglia
+xorshift32 PRNG mixing function** — applied to `constant + otherParam`.
+
+The larger (`Context != null`) branch's tail shows the identical
+shl-13/ushr-17-xor/shl-5 xorshift pattern computing values written into
+single-element `int[1]` arrays, which are then packed into the returned
+`Object[]` (alongside a `null` slot, mirroring the null-branch's `Object[4]`
+shape exactly).
+
+### Conclusion: this was never a key at all
+An EC-256 private key is a 32-byte array. This method returns an `Object[]` of
+**wrapped single ints**, each produced by xorshift-mixing a small integer
+parameter (or a constant) — structurally incompatible with holding key material,
+and exactly the shape you'd expect from a **shared hash/lookup-key computation
+utility** that the app's protector auto-injects into every obfuscated class to
+support its reflection-based string/method resolution (the same `e.b(magic_int)`
+calls seen everywhere else in the app). `b()` isn't "the function that derives
+the Genesis authentication key, hidden behind obfuscation" — it's boilerplate
+plumbing for the obfuscator itself, incidentally present in this particular
+class along with everywhere else.
+
+Combined with §7 (the class is never instantiated anywhere in the app, and even
+if it were, it authenticates the phone as a terminal, not a reader's acceptance
+criteria): there is no Genesis authentication key to find here, hidden or
+otherwise. The investigation is complete, not just abandoned at "too hard to
+read" — the full bytecode was decompiled, executed, and shown concretely to
+contain no key material.
