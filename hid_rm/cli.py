@@ -8,6 +8,7 @@ detail (hex frames, per-round transcripts, GATT dumps, request/response bytes).
 Offline (no reader):
   python -m hid_rm.cli show snmp-discovery
   python -m hid_rm.cli show core <name>              # e.g. get_reader_info
+  python -m hid_rm.cli show locate [seconds] [color]  # preview find-reader payload
   python -m hid_rm.cli list                          # list core commands
   python -m hid_rm.cli decode <payload-hex>          # decode an Artemis response
   python -m hid_rm.cli decode-snmp <hex>             # parse an SNMP Report
@@ -17,6 +18,7 @@ Live over BLE (needs `bleak`):
   python -m hid_rm.cli scan
   python -m hid_rm.cli probe <MAC>                    # connect, try safe reads
   python -m hid_rm.cli core <MAC> <name>              # send a core read, decode reply
+  python -m hid_rm.cli locate <MAC> [seconds] [color]  # "find reader": flash + beep it
   python -m hid_rm.cli snmp-discover <MAC>
   python -m hid_rm.cli send <MAC> <apdu-hex>
   python -m hid_rm.cli fuzz <MAC> [name]              # robustness test, watch for crash
@@ -57,6 +59,12 @@ def cmd_show(a):
     elif a[0] == "core":
         p = artemis.core_payload(a[1])
         print("payload:", p.hex(), "(DANGER: state-changing)" if artemis.is_dangerous(a[1]) else "")
+        print("framed :", _apdu_frame(p).hex())
+    elif a[0] == "locate":
+        seconds = float(a[1]) if len(a) > 1 else 3.0
+        color = a[2] if len(a) > 2 else "blue"
+        p = artemis.locate_payload(seconds=seconds, color=color)
+        print("payload:", p.hex())
         print("framed :", _apdu_frame(p).hex())
 
 
@@ -137,6 +145,32 @@ async def cmd_core(mac, name, verbose=False):
     if not verbose:
         print(f"{name}: {seos.describe(got[-1])}")
         print("(run with --verbose for raw frames)")
+        return
+    for f in got:
+        print("  <", f.hex(), " ", seos.describe(f))
+
+
+async def cmd_locate(mac, seconds=3.0, color="blue", beep=True, verbose=False):
+    """'Find reader': flash the LED and beep for `seconds`. Unauthenticated --
+    this is CoreCommand.readerLocate (tag 36), not a credential/config command,
+    and needs no session on this reader."""
+    payload = artemis.locate_payload(seconds=seconds, color=color, beep=beep)
+    if verbose:
+        print("payload:", payload.hex())
+        print("framed :", _apdu_frame(payload).hex())
+    c, rx, ev, disc = await _connect(mac)
+    await _drain(rx, ev, 2.0)
+    await c.write_gatt_char(DATA_CHAR_UUID, _apdu_frame(payload), response=False)
+    got = await _drain(rx, ev, 3.0)
+    await c.disconnect()
+    if not got:
+        print(f"locate: no response -- reader may still have flashed/beeped "
+              f"(ack-less write); no confirmation available")
+        return
+    if not verbose:
+        print(f"locate: {seos.describe(got[-1])}")
+        print(f"(reader should have flashed {color} and "
+              f"{'beeped' if beep else 'stayed silent'} for {seconds:g}s)")
         return
     for f in got:
         print("  <", f.hex(), " ", seos.describe(f))
@@ -371,6 +405,9 @@ def main(argv):
         asyncio.run(cmd_probe(a[0], verbose=verbose))
     elif cmd == "core":
         asyncio.run(cmd_core(a[0], a[1], verbose=verbose))
+    elif cmd == "locate":
+        asyncio.run(cmd_locate(a[0], seconds=float(a[1]) if len(a) > 1 else 3.0,
+                                color=a[2] if len(a) > 2 else "blue", verbose=verbose))
     elif cmd == "snmp-discover":
         asyncio.run(cmd_send(a[0], framing.build_apdu(INS, snmpv3.build_discovery()).hex(), verbose=verbose))
     elif cmd == "send":
