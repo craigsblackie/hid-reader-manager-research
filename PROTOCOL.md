@@ -919,12 +919,23 @@ Full capture in `leak_reports/nfc_seos_exchange_capture.txt`.
 ### What the reader does (NFC)
 
 `SELECT STANDARD_SEOS` → `SELECT ADF` (lists its configured PACS OIDs — the same
-config leak seen over BLE) → **`90 5A 00 00 03 <3 bytes>`** (a proprietary HID
-command, CLA `0x90` INS `0x5A`, sent twice with data `000000` then `B0BBBB`) →
-on our junk `9000` it **abandons SEOS** and cycles to the next credential type:
-the HID mobile AID (`A0000006 76…`), then `MOBILE_SEOS_ADMIN_CARD`, then
-`OPERATION_SELECTOR`. This closes the earlier open item (§16): the full `90 5A`
-command is now captured, not just its first bytes.
+config leak seen over BLE) → **`90 5A 00 00 03 <3 bytes>`** (twice, data `000000`
+then `B0BBBB`) → it cycles to the next credential type: the HID mobile AID
+(`A0000006 76…`), then `MOBILE_SEOS_ADMIN_CARD`, then `OPERATION_SELECTOR`. This
+closes the earlier open item (§16): the full `90 5A` command is now captured.
+
+**`90 5A` decoded = MIFARE DESFire `SelectApplication`.** `CLA 0x90` (wrapped
+native), `INS 0x5A` (SelectApplication), `Lc 3`, a 3-byte AID, `Le 00` is the
+exact DESFire signature: AID `000000` selects the PICC master application, then
+AID `B0BBBB` selects a specific DESFire application. So the reader probes for a
+**MIFARE DESFire** credential on the 14443-4A card (matching the
+`MifareDesfireEV1/EV3` KeyType). **Tested:** replying `91 00` (DESFire
+OPERATION_OK) to both selects did **not** make the reader proceed to DESFire
+authenticate/read — it repeats the same two selects and moves on. So either the
+reader needs a fuller valid DESFire card (identity via GetVersion, the real app
++ PACS file) before it commits, or `90 5A` is a fixed presence probe. Serving a
+DESFire PACS credential would still need the app's diversified AES key — the
+same key wall as SEOS.
 
 ### Why the AKE is unreachable, and why emulation is blocked
 

@@ -20,12 +20,24 @@ SELECT ADF OID lists decoded:
   APDU 7: 1.3.6.1.4.1.29240.1.1.2.1.24.1.1.163.11433.1
           1.3.6.1.4.1.29240.1.1.2.1.24.1.1.11571.1
 
-The proprietary command (previously only partially captured):
+The "90 5A" command — decoded as MIFARE DESFire SelectApplication:
   CLA=90 INS=5A P1P2=0000 Lc=03 DATA=000000 | B0BBBB   Le=00
-  Sent immediately after the SEOS ADF list, twice with different 3-byte data.
-  Purpose not definitively identified (HID-proprietary; obfuscated in the app);
-  characterized here by structure. Our 9000 reply does not satisfy it, so the
-  reader abandons the SEOS applet and moves to the next credential type.
+  This is the EXACT wire signature of a wrapped MIFARE DESFire native command:
+  CLA 0x90 (wrapped), INS = DESFire command (0x5A = SelectApplication), Lc 3,
+  a 3-byte AID, Le 00. First AID 000000 = the PICC master application (the
+  mandatory first select); second AID B0BBBB = a specific DESFire application.
+  So the reader probes for a MIFARE DESFire credential on the 14443-4A card,
+  consistent with the MifareDesfireEV1/EV3 KeyType.
+
+  CAVEAT (tested): replying with the DESFire success status 91 00 to both
+  SelectApplication calls did NOT make the reader advance to DESFire
+  authentication/read — it still sends exactly these two selects and then moves
+  on to the mobile AIDs. So either (a) the reader needs a fuller valid DESFire
+  card presentation (GetVersion identity, the real app + PACS file, and it only
+  commits once those look right), or (b) 90 5A is a fixed 2-step DESFire
+  presence probe. Either way, actually serving a DESFire PACS credential would
+  require the app's diversified AES key (the same non-exportable-key wall as
+  SEOS), which we do not have.
 
 WHY NO AKE CHALLENGE WAS CAPTURED
 ---------------------------------

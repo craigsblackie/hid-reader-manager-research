@@ -440,9 +440,20 @@ static NfcCommand hid_recon_nfc_callback(NfcGenericEvent event, void* context) {
         if(fc->len > 0) bit_buffer_copy_bytes(app->tx_buffer, fc->bytes, fc->len);
         FURI_LOG_I(TAG, "fuzz case -> %s (%u bytes)", fc->name, (unsigned)fc->len);
 #else
-        /* Always answer 9000 -- live-proven (PROTOCOL.md) that the reader
-         * only checks the trailing status word, not the content. */
-        uint8_t sw[] = {0x90, 0x00};
+        /* Answer with a status word appropriate to the command class so the
+         * reader advances as far as possible and reveals what it wants next:
+         *   - CLA 0x90 is a wrapped MIFARE DESFire native command; DESFire
+         *     signals success with status 0x00 carried as SW 91 00. Replying
+         *     91 00 to SelectApplication (INS 5A) etc. keeps the reader in the
+         *     DESFire flow so it proceeds to GetApplicationIDs / Authenticate /
+         *     ReadData -- exactly the roadmap for what a DESFire credential
+         *     would need. (Content otherwise ignored -- live-proven.)
+         *   - everything else: plain ISO7816 success 90 00. */
+        uint8_t sw[2] = {0x90, 0x00};
+        if(copy_len > 0 && apdu[0] == 0x90) {
+            sw[0] = 0x91; /* DESFire OPERATION_OK */
+            sw[1] = 0x00;
+        }
         bit_buffer_copy_bytes(app->tx_buffer, sw, sizeof(sw));
 #endif
         iso14443_4a_listener_send_block((Iso14443_4aListener*)event.instance, app->tx_buffer);
