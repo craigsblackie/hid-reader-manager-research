@@ -1032,3 +1032,29 @@ short hex config OID, or a dotted OID interchangeably (`_oid_bytes` resolves via
 `config_oids`), and `config-get` prints the human label of what it read. These
 are the reader's short internal config OIDs; on the wire the app routes SETs for
 them through its DeterministicProvisioning prefix path (noted in the module).
+
+## 25. Config card — characterized (read-side), value decoder added
+
+The "mobile key config card" (the card that registers the management key on the
+reader) was probed with the Flipper's `nfc` reader CLI (no SAM in that path):
+- **ISO14443-4A smart card**; processes ISO7816 SELECTs (returns `6A 82` for
+  unknown AIDs — it's alive and speaking ISO7816).
+- **Not DESFire** (`6E 00` = CLA `0x90` unsupported).
+- **No standard HID AID exposed unauthenticated**: STANDARD_SEOS, the 10-byte
+  SEOS base, MOBILE_SEOS_ADMIN_CARD, the HID-mobile AID (`A0000006 76…`),
+  OPERATION_SELECTOR, PPSE and NDEF all return `6A 82`.
+
+So its content sits behind HID's SEOS/proprietary auth — exactly what the **SAM**
+performs. The Flipper's `nfc` CLI does not route through the SAM (only **seader**
+does, and seader is GUI-only with no CLI), so the SAM-authenticated read must be
+driven on the device; blind CLI input to seader produced no observable read.
+Even a successful read may yield a reader-targeted signed/encrypted blob rather
+than replayable keys (a config card is applied *to* a reader, not read *by* a
+phone).
+
+Also added `hid_rm/config_values.py`: decodes config-item VALUES against the
+`HidGlobal.Asn1.ConfigurationItems` schema (enums like DESFireVersion /
+CommunicationSettings / ApplicationKeyType, MifareAuthenticationKeyType,
+DivInputType; structures like DESFireCredentialStructure). `config-get` now
+renders known structures as labelled fields (e.g. `DESFIRE_EV3` ->
+`version=desfireEV3, communicationSettings=encrypt, applicationKeyType=aes128`).
