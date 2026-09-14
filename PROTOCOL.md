@@ -1058,3 +1058,41 @@ CommunicationSettings / ApplicationKeyType, MifareAuthenticationKeyType,
 DivInputType; structures like DESFireCredentialStructure). `config-get` now
 renders known structures as labelled fields (e.g. `DESFIRE_EV3` ->
 `version=desfireEV3, communicationSettings=encrypt, applicationKeyType=aes128`).
+
+## 26. Live BLE management gate — tested, and it's stronger than modeled
+
+Ran live BLE tests against the reader (bleak; reader rested). Findings correct
+and sharpen the management model:
+
+1. **On connect the reader is a credential *reader* (ISO7816 terminal), not a
+   management server.** It immediately emits `SELECT AID STANDARD_SEOS`, then
+   cycles `MOBILE_SEOS_ADMIN_CARD` → `OPERATION_SELECTOR` → `e1 xx` (EOT) — the
+   same credential/admin hunt seen over NFC. It is waiting for *us* (the
+   connected party) to answer as a card.
+2. **Sending SNMP on a plain connect gets you disconnected** — tested both as a
+   raw APDU and as a `[len][apdu][crc]` frame; the reader drops the link in both
+   cases with no reply. So it is NOT a framing problem: the reader simply does
+   not accept management commands from an unauthenticated party.
+3. **The reader's BLE reader→app frames carry raw APDUs** in ProtocolV1
+   fragments (the on-connect SELECT reassembles to `00 A4 04 00 10 <AID> 00`
+   with no length/CRC wrapper), i.e. the `[len][crc]` Artemis frame is not used
+   in that direction.
+4. Answering as a card (status words to its SELECTs) keeps the link up and lets
+   the reader cycle its AID hunt — but every management entry point it offers
+   (`MOBILE_SEOS_ADMIN_CARD`, `OPERATION_SELECTOR`) requires speaking the SEOS
+   admin protocol (the AKE), which needs the admin key.
+
+**Consequence for the tooling.** This means `config-get`/`config-set` cannot
+work by "connect + send SNMP with keys" alone: the reader must first be driven
+into its admin/operation mode by authenticating as the **mobile admin
+credential (SEOS AKE)** — whose key is the non-exportable, Origo-provisioned one
+(phone SE). So BLE management is gated by **two** things, not one: the SEOS admin
+credential (to enter management mode) *and* the SNMP keys (for the config
+exchange). The SNMP-key-only path I built is necessary but not sufficient on
+its own; it presupposes the reader is already in admin mode.
+
+**The only unauthenticated BLE surface remains the credential-hunt / config
+leak** (OIDs, AIDs, technologies) — confirmed again live as the sole thing the
+reader exposes without the admin credential. Management without the app is
+therefore achievable only through the owner's credential path (mobile admin via
+Origo, or the config-card mechanism), not from keys alone.
