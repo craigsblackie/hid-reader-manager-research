@@ -1096,3 +1096,40 @@ leak** (OIDs, AIDs, technologies) — confirmed again live as the sole thing the
 reader exposes without the admin credential. Management without the app is
 therefore achievable only through the owner's credential path (mobile admin via
 Origo, or the config-card mechanism), not from keys alone.
+
+## 27. Live BLE probe + fuzz results
+
+Probed and fuzzed the reader live over BLE (bleak). Reader stayed healthy
+throughout (still advertising "Seos" after the full fuzz run — no crash/brick).
+
+### Credential-hunt behaviour (probe)
+On connect the reader runs a **fixed 4-AID scan**, identical regardless of what
+we answer (tested `9000`, `6A82`, `6300`, empty FCI, AID FCI, a 200-byte
+oversized FCI, `61FF`):
+`SELECT STANDARD_SEOS(16B qualifier)` → `SELECT STANDARD_SEOS(10B)` →
+`SELECT MOBILE_SEOS_ADMIN_CARD` → `SELECT OPERATION_SELECTOR` → `e1 02` (EOT).
+Unlike NFC, answering `9000`/FCI to `STANDARD_SEOS` does **not** make it proceed
+to `SELECT ADF` (the config-leak step) — the BLE flow does not branch on our
+card responses. Our writes *are* delivered (an unexpected command mid-idle makes
+the reader disconnect), so this is a protocol/flow difference, not a delivery
+problem. Reassembled reader→app frames are **raw APDUs** (no `[len][crc]`).
+
+### Fragment-layer fuzz (robustness) — reader status codes
+| input | reader reaction |
+| --- | --- |
+| intermediate fragment w/o initial (`0x05…`) | **`e1 05`**, connection kept |
+| init-with-more promising 31, sends none (`0x9F…`) | **`e1 05`**, connection kept |
+| final w/o initial (`0x40…`) | disconnect |
+| zero-length single (`0xC0` alone) | disconnect |
+| reserved header (`0x3F…`) | disconnect |
+| unsolicited extension frame (`0xE0`, `0xE3`) | disconnect |
+| truncated-CRC frame | disconnect |
+| oversized single fragment (>MTU) | blocked at BLE MTU (write fails) |
+
+So the reader's status frames decode as: **`e1 02`** = normal EOT (scan done, no
+card), **`e1 05`** = fragment-sequence error (kept alive), **`e1 06`** = seen at
+initial connect. The fragment layer is robust: it either errors cleanly (`e1 05`,
+link kept) or drops the link, and never crashed or rebooted under fuzzing —
+consistent with the earlier NFC fuzz result (§10/§16). No availability/DoS beyond
+the connection-lockout already noted (§18). The firmware/config extension frames
+(`0xE2`/`0xE5`) were deliberately NOT fuzzed (potentially destructive).
