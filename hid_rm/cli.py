@@ -607,6 +607,22 @@ def main(argv):
         ak = bytes.fromhex(a[1]) if len(a) > 1 else None
         pk = bytes.fromhex(a[2]) if len(a) > 2 else None
         print(btsnoop.render(btsnoop.decode_session(data, auth_key=ak, priv_key=pk)))
+    elif cmd == "sniff":
+        # sniff <MAC> [duration] [rawfile] [authkey] [privkey]  (nRF sniffer OTA)
+        from . import nrf_sniffer, btsnoop
+        dur = float(a[1]) if len(a) > 1 else 30.0
+        raw = a[2] if len(a) > 2 else None
+        ak = bytes.fromhex(a[3]) if len(a) > 3 else None
+        pk = bytes.fromhex(a[4]) if len(a) > 4 else None
+        ev = nrf_sniffer.capture_session("/dev/ttyACM2", a[0], duration=dur,
+                                         auth_key=ak, priv_key=pk, raw_out=raw)
+        print(btsnoop.render(ev))
+    elif cmd == "decode-raw":
+        # decode-raw <rawfile> [authkey] [privkey]
+        from . import nrf_sniffer, btsnoop
+        ak = bytes.fromhex(a[1]) if len(a) > 1 else None
+        pk = bytes.fromhex(a[2]) if len(a) > 2 else None
+        print(btsnoop.render(nrf_sniffer.decode_raw(a[0], auth_key=ak, priv_key=pk)))
     elif cmd == "fuzz-list":
         for name, frags, note in fuzz.cases():
             print(f"{name:32} {sum(len(f) for f in frags):4}B  {note}")
