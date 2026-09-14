@@ -248,11 +248,20 @@ async def cmd_config_get(mac, dotted_oid, auth_key, priv_key, user, verbose=Fals
         print(f"response failed to verify/decrypt: {e}");
         if verbose: print("  raw:", data.hex())
         return
-    from . import config_oids
-    label = config_oids.describe(config_oids.resolve(dotted_oid))
+    from . import config_oids, config_values
+    hex_oid = config_oids.resolve(dotted_oid)
+    label = config_oids.describe(hex_oid)
     tag = f"{label['label']} [{label['name']}]" if label.get("known") else dotted_oid
     for vb in r["varbinds"]:
-        print(f"{tag} = {vb['value'].hex() if vb['value'] else '<empty>'}")
+        if vb["value"]:
+            decoded = config_values.decode_for_oid(hex_oid, vb["value"])
+            if decoded.get("decoded"):
+                pretty = ", ".join(f"{k}={v}" for k, v in decoded["decoded"].items())
+                print(f"{tag} = [{decoded['structure']}] {pretty}")
+            else:
+                print(f"{tag} = {vb['value'].hex()}")
+        else:
+            print(f"{tag} = <empty>")
     if verbose:
         print(f"  (engineBoots={r['engine_boots']} engineTime={r['engine_time']})")
 
