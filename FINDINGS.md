@@ -556,8 +556,8 @@ a system app on some deployments), `ACCESS_MOCK_LOCATION`, `DETECT_SCREEN_CAPTUR
   (the security boundary is the invite code's server-side validity/expiry, not
   this launch path) but worth knowing: a malicious page could silently deep-link
   into this activity for UI-confusion/phishing purposes, and it's the concrete
-  mechanism behind invite codes like the one you provided (`BNQ3-BRZ6-ZEJL-U4EY`,
-  still unused by this research per your request to keep it unauthenticated).
+  mechanism behind invite codes like the one provided for this research (redacted;
+  a one-time enrollment code), still unused per the preference to stay unauthenticated.
 - `com.assaabloy.mobilekeys.api.network.NfcTagNetworkReaderActivity` — exported,
   no permission, handles `NDEF_DISCOVERED` for scheme **`seosnetworkreader`**
   (resolved from resource `@7F1000BF`). Any NFC tag written with a
