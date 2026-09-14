@@ -1349,3 +1349,73 @@ setting, e.g. MEDIA_OUTPUT=01) answers the first half safely: it reveals whether
 the reader even *accepts* an unauthenticated write, without changing any state.
 Prepared as a ready-to-run harness (`tools/live_set_probe.py`); it needs the
 reader awake/advertising. No unauthenticated write has been sent yet.
+
+---
+
+## §33 — Full unauthenticated catalog pull: 43/56 config items readable live
+
+Reverse-engineered the exact wire format of the "partial read" GET the app
+injects into the reader's poll loop (`hid_rm/tunnel.py`), validated **byte-exact**
+against the real captured session (built bytes == captured bytes for matching
+msg_id/request_id), then used it to independently query **every named OID in
+our catalog** (not just the handful one phone screen happened to touch) --
+live, from a bare BLE central, no bonding, no credential:
+
+    44 0A 44 00 00 00 A0 <L1> 94 <L2> 30 <L3> <SNMPv3 GET> 90 00
+
+The GET always targets the fixed meta-OID `STORE_OPERATION_PARTIAL_READ`
+(03000306); the *value* field carries `SEQUENCE{ OID target, INTEGER offset,
+INTEGER length }`, and multi-part values (>128B) are reassembled across
+repeated rounds with increasing offset. USM header fields are fixed constants
+in every real noAuthNoPriv request (engineId=03010705, user=03010704,
+boots=time=0) -- no discovery handshake needed.
+
+One bug found and fixed en route: the OPERATION_SELECTOR AID is **10 bytes**
+(`a000000382002f000101`), not the 7-byte value assumed earlier from a partial
+read of one capture line -- the reader silently disconnects if you reply "not
+found" to its own management AID.
+
+**Result, run against the test reader with zero authentication:**
+
+    43 of 56 catalogued config items readable
+    13 refused (secured items -- reader gave an empty/short reply, needs authPriv keys)
+
+Every readable value was rendered into a human-readable line by a new
+`hid_rm/config_render.py` (grounded in decompiled `MediaOutputConfiguration`,
+`OSDPConfiguration`, `UARTConfiguration` for the items with confirmed structs;
+a labelled BER/record tree-print, plus an ASCII-string fast path, for
+everything else -- see PROTOCOL.md §31-32 background). Concretely this
+recovered, unauthenticated: the reader's **product serial number** (plain
+ASCII), its **BLE device name**, **OSDP configuration** (enabled/address/
+timeouts/spec version), **UART baud/parity/stop-bits**, the **Wiegand/OSDP/
+I2C/UART output-mode bitmask**, the full **SEOS PACS and admin-card key-set**
+structure (16 + 8 length-prefixed credential records), the advertised
+**SEOS AID list**, LED colours, velocity-check/tamper/visual-feedback timings,
+and the HF register table -- all as labelled settings, not raw hex. (The
+serial number and other reader-identifying values are redacted from this repo
+per this project's stated policy; the technique and code are exactly as run.)
+
+**Confirms HID's own code, not just ours, treats this as intentional.** The
+app's decompiled `ArtemisManager.cs` marks ~30 of these OIDs with
+`isKnowntoBePublicRead: true` at their call sites -- SEOS_PACS_CONFIG,
+SEOS_ADMIN_CARD_APP, DESFIRE_EV3, PRODUCT_SERIAL_NUMBER, OSDP_CONFIGURATION,
+MEDIA_OUTPUT and more are all deliberately fetched unauthenticated by the real
+app. This matches our empirical 43/56 closely (the small gap is items whose
+OID is public-flagged in the app but this reader firmware still refused, or
+vice versa). So §30-32's "no transport authentication" is not an accidental
+flaw we tripped over -- HID's own client code already assumes most config is
+public; what §31-32 add is that the *entire* transport (including the
+secured-item request path) is reachable with no credential, and that secured
+items themselves stay genuinely protected (refused, not leaked) behind authPriv.
+
+### What this tells us about card technology support (see chat/response for
+the full breakdown): DESFIRE_EV3 and DESFIRE_SIO_FILE_SETTINGS are present and
+non-empty (DESFire EV3 configured), EM_PROXIMITY_OUTPUT_FORMAT is present
+(125kHz EM prox configured), SEOS is unambiguous (PACS + admin-card + AID
+list all present and rich). CHUID_CONFIG and DESFIRE_PROXIMITYCHECK exist as
+OIDs but were refused -- can't confirm enabled/disabled from this test. No
+iCLASS OID exists in our catalog at all, so iCLASS support is undetermined
+either way, not ruled out.
+
+Tooling: `hid_rm/tunnel.py` (request/response codec), `hid_rm/config_render.py`
+(human-readable rendering), `tools/live_full_config_pull.py` (the live sweep).
