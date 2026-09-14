@@ -1230,3 +1230,59 @@ This closes the loop on the whole investigation: the management plane is
 gated by the non-exportable SEOS admin credential (so we can't *originate*
 management), but it is **not confidential on the wire**, so it can be fully
 *observed* and its authenticated writes replayed.
+
+---
+
+## §31 — LIVE REPLAY TEST: the management transport is NOT crypto-gated
+
+Ran the phone's captured 178-response sequence (`phone_tx_seq.json`) back at the
+reader as a BLE central, answering its GET_DATA polls. Result over 40 rounds:
+
+    OPERATION_SELECTOR engaged=True   reader returned data=True
+
+The reader **accepted the replayed opening exchange with no authentication** —
+no SEOS admin AKE, no session key, no challenge — and drove its poll/response
+tunnel from our replayed frames. The PUT_DATA results (extended-length, parsed
+`00 DA P1 P2 00 <len16> <data>`) contained **real reader data in cleartext**:
+
+| round | tag  | decoded                                  | secret? |
+|-------|------|------------------------------------------|---------|
+| 4/6   | —    | session handshake w/ token fe11029c0586, ints 212/201 | no |
+| 12    | `ab` | component version string **"1.5"**       | no |
+| 18    | `ac` | component version string **"1.4"**       | no |
+| 14/16 | `ae`/`b8` | status ints (0x0172) + counters     | no |
+| 30    | `8a` | small tunnel frame (id 0x61 0x0113 ...)  | no |
+| 32-36 | `8a` | **SNMPv3 authPriv** (`30 82 .. 02 01 03`), 123/245/171 B | **yes (encrypted)** |
+
+### What this proves (the flaw)
+
+1. **The management channel has no transport authentication.** Opening
+   OPERATION_SELECTOR (`a000000382002f`) and getting a valid FCI back, then
+   running the poll loop, requires *only* replaying the phone's frames. Any BLE
+   central in range can do this — the link is unencrypted (§30) and the session
+   is not gated by the SEOS admin credential at the transport layer.
+2. **Non-secret data leaks freely:** component/protocol version strings, status
+   counters, session identifiers — extractable by anyone, no keys.
+3. **Secret config does NOT leak.** The actual configuration rides inside
+   **SNMPv3 authPriv** (rounds 32-36, cleartext-visible as `30 82 .. 02 01 03`
+   but AES-128-CBC encrypted under the per-reader USM keys). Those keys are
+   Origo-cloud-issued, bound to the reader's engineId, and never on the wire.
+
+### Answer: can you get the same config onto another reader?
+
+**No — not via this channel.** You can *observe and replay the transport*, and
+read version/identity/structure, but the config payload is encrypted under
+per-reader keys tied to that reader's engineId. Replaying reader A's SNMPv3
+frames at reader B fails: B's engineId/boots/keys differ, so authPriv auth +
+freshness reject them. Cloning config would require the target reader's own
+Origo-issued USM keys, which this attack path never exposes.
+
+### Net security assessment
+
+- **Confidentiality of secret config: holds** (SNMPv3 authPriv, per-reader keys).
+- **Transport authentication: absent** — unauthenticated version/identity
+  disclosure + the ability to *drive* the management tunnel is a real weakness
+  (recon, fingerprinting, and a foothold for any future flaw in the inner
+  layer), even though it does not itself yield config or cross-reader cloning.
+- Writes are the same story: a replayed SET rides authPriv, so it only lands on
+  the reader whose keys signed it — we did **not** attempt any write.
