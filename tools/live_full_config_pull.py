@@ -32,7 +32,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from hid_rm import DATA_CHAR_UUID, framing, tunnel, config_oids, config_render
+from hid_rm import DATA_CHAR_UUID, framing, tunnel, config_oids, config_render, card_tech
 
 OPERATION_SELECTOR_AID = bytes.fromhex("a000000382002f000101")
 FCI_OK = bytes.fromhex("6f0885060201400201009000")
@@ -163,6 +163,10 @@ async def pull(mac: str, verbose: bool = False):
 
 def render_report(results: dict) -> str:
     lines = ["Reader config -- full unauthenticated catalog pull", ""]
+    lines.append(card_tech.render(results))
+    lines.append("")
+    lines.append("-" * 72)
+    lines.append("")
     readable = {k: v for k, v in results.items() if v}
     refused = {k: v for k, v in results.items() if v is None}
     lines.append(f"{len(readable)} of {len(results)} catalogued items readable with NO authentication:\n")

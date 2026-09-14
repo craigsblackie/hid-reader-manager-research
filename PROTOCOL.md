@@ -1419,3 +1419,23 @@ either way, not ruled out.
 
 Tooling: `hid_rm/tunnel.py` (request/response codec), `hid_rm/config_render.py`
 (human-readable rendering), `tools/live_full_config_pull.py` (the live sweep).
+
+---
+
+## §34 — iCLASS / iCLASS SE: owner-confirmed, not yet live-verifiable
+
+The reader's owner confirms it supports **iCLASS** and **iCLASS SE** in
+addition to the technologies detected live in §33. Neither has a config-item
+OID in our catalog: HID's client code (decompiled `HidGlobal.ArtemisManager`)
+keys iCLASS/Picopass support off **SAM library hivecodes**
+(`PicopassCardEdgeLibraryHivecode`, `PicopassApiLibraryHivecode`,
+`iClassApiLibraryHivecode`) rather than the config MIB this tool walks --
+those live in a resident-assemblies/capability-list command we haven't
+reverse-engineered yet (candidate follow-on work).
+
+`tools/live_full_config_pull.py`'s report now opens with a **Card
+technologies** section (`hid_rm/card_tech.py`) that keeps this honest: items
+actually detected live and unauthenticated (SEOS, DESFire EV3, EM prox) are
+labelled `[DETECTED live, unauthenticated]`; iCLASS/iCLASS SE are labelled
+`[OWNER-CONFIRMED, not live-verified]` -- reported because the owner told us,
+never conflated with something this tool independently proved.
