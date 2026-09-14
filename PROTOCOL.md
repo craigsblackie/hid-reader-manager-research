@@ -1286,3 +1286,66 @@ Origo-issued USM keys, which this attack path never exposes.
   layer), even though it does not itself yield config or cross-reader cloning.
 - Writes are the same story: a replayed SET rides authPriv, so it only lands on
   the reader whose keys signed it — we did **not** attempt any write.
+
+---
+
+## §32 — "Send it unencrypted" / "use a key we control": the three SNMP paths
+
+Decoding the full captured session (`decode-session`) plus the app's own code
+(`HidGlobal.ArtemisManager.BuildGet/PutDataSnmpMessage`, `SnmpV3.GenerateMessage`)
+pins down exactly how confidentiality and authentication are (and aren't)
+applied. There are **three** SNMP request builders, each with fixed flags:
+
+| App method                     | PDU | ProtocolFlags            | Purpose                     | Keys needed |
+|--------------------------------|-----|--------------------------|-----------------------------|-------------|
+| `BuildGetDataSnmpMessage`      | GET | `Reportable` (noAuthNoPriv) | read **plain config**    | **none**    |
+| `BuildGetSecuredDataSnmpMessage`| GET| `Reportable+Auth+Priv`   | read **secured** items      | yes         |
+| `BuildPutDataSnmpMessage`      | SET | `Reportable+Auth+Priv`   | **all writes**              | yes         |
+
+`GenerateMessage` is a special authPriv SET over USM MIB OIDs 4/6/9/13 =
+username / authKey / privKey / ownership — i.e. **install a new admin key**
+(this is how Origo provisions the app's per-reader credential).
+
+### "Can we make the reader send the data unencrypted?"
+
+For **plain config: nothing to downgrade — it is already sent in the clear.**
+The whole captured management session is noAuthNoPriv (msgFlags `00`, security
+model 257), and the reader answered every GET with a cleartext scoped PDU. The
+`decode-session` output is the reader's config read with **no key and no
+encryption**: MEDIA_OUTPUT, OSDP_CONFIGURATION, EXTERNAL_UART, SEOS AIDs list,
+ICE number, config-card timeout, the data-model/protocol table, and the OID
+structure of the SEOS PACS / admin-card apps. Any BLE central in range can pull
+this — the app literally uses the keyless builder for it.
+
+For **secured items** (raw card-edge key material, PACS key sets) the app uses
+the authPriv builder. Two things bound the risk:
+  1. The sensitive key bytes appear **write-only** — even the authPriv walk of
+     `SEOS_PACS_CONFIG` returned OID *structure*, never key values.
+  2. Whether the reader would *also* answer a **noAuthNoPriv GET for a secured
+     OID** (a true downgrade) is untested — the app never asks. That is the one
+     open downgrade question; even a positive result likely exposes secured
+     *settings*, not raw keys.
+
+### "Can we use a key we control?"
+
+The provisioning mechanism exists (`GenerateMessage`, usmUserKeyChange over
+OIDs 4/6/9/13): a SET that installs a new USM username + auth/priv keys. **But
+it is an authPriv SET** — it presupposes you already hold a valid admin key to
+sign the message that installs the next one. You cannot bootstrap a
+self-controlled key from nothing *unless the reader accepts an unauthenticated
+(noAuthNoPriv) SET*.
+
+### The one decisive open test: does the reader enforce auth on WRITES?
+
+Reads are provably not auth-gated. If **writes** are equally ungated — if the
+reader honours a noAuthNoPriv SET the way it honours a noAuthNoPriv GET — then
+an attacker can reconfigure the reader and even install their own admin keys
+with no credential, which *is* the "clone config onto another reader" attack.
+If the reader enforces authPriv on SET (the app's clear intent), writes stay
+protected by the per-reader Origo keys and cloning is not possible off-box.
+
+A **reversible SET probe** (write a plain-config value back to its current
+setting, e.g. MEDIA_OUTPUT=01) answers the first half safely: it reveals whether
+the reader even *accepts* an unauthenticated write, without changing any state.
+Prepared as a ready-to-run harness (`tools/live_set_probe.py`); it needs the
+reader awake/advertising. No unauthenticated write has been sent yet.
