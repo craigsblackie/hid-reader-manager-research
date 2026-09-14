@@ -1193,3 +1193,40 @@ SNMP GET/SET carriers. What it yields depends on the SNMP security level:
   app" path fed by observed traffic, subject to the SNMPv3 freshness window.
 Either way it also captures the **SEOS admin AKE**, finally letting that
 handshake (unreachable from our side) be characterized from real traffic.
+
+## 30. OTA capture of a real management session (nRF sniffer) — the wall observed
+
+Using the reverse-engineered nRF sniffer (§ nrf_sniffer.py) we captured a real
+**phone (HID Reader Manager) ↔ reader management session** over the air and
+decoded it. Headline: **the phone↔reader BLE link is UNENCRYPTED at the link
+layer**, so the entire management exchange is recoverable in cleartext without
+any key — this is the one vantage point that shows the parts we cannot perform
+ourselves (the SEOS admin authentication and the config read/write).
+
+What the session contains, in order:
+1. The same **credential/AID hunt** we see unauthenticated (SELECT SEOS → admin
+   card → operation selector).
+2. A **SEOS admin authentication** exchange (the mobile admin credential proving
+   itself — the AKE we can't do without the key).
+3. A long **configuration read/write** phase. On the wire this is **not** the
+   textbook SNMPv3 framing from the decompiled `SnmpV3` class — it is a custom
+   BER config structure carried in `GET_DATA (0xCA)` / `PUT_DATA (0xDA)` APDUs
+   (context tags `bd`/`ab`/`ae`, `STORE_OPERATION_PARTIAL_READ` wrapping the
+   target OID + read params). The **config-item OIDs are cleartext** — the
+   session touched ICE number, SEOS PACS config, SEOS AIDs list, OSDP config,
+   media output, external UART, HID identity, config-card timeout, and more
+   (`config_oids.py` names them), and the responses carry cleartext values
+   (e.g. component version strings).
+
+Consequence: with an over-the-air sniffer (or the phone's HCI snoop log), the
+reader's full configuration and the management protocol are **observable**
+without the admin key — the key never crosses the wire, so this enables
+observation and message *replay*, not key extraction. The captured authenticated
+write messages are what `config-apply` would replay. (Raw captures are kept
+local — they contain the reader's configuration and identity — and are not
+committed.)
+
+This closes the loop on the whole investigation: the management plane is
+gated by the non-exportable SEOS admin credential (so we can't *originate*
+management), but it is **not confidential on the wire**, so it can be fully
+*observed* and its authenticated writes replayed.
