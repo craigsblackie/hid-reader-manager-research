@@ -1165,3 +1165,31 @@ credential and admin trees) unauthenticated — more than the NFC capture showed
 but never initiates the SEOS AKE without a real credential (it SAM-rejects after
 the discovery scan). The AKE challenge is therefore not reachable from either
 transport without valid credential keys.
+
+## 29. Observing the phone's management session (no sniffer hardware)
+
+No passive BLE sniffer was available (Intel AX200 can't monitor another pair's
+connection; `btmon` only sees this host; the Flipper can't sniff BLE). The clean
+alternative needs no extra hardware: **Android's built-in Bluetooth HCI snoop
+log** captures every BLE packet the phone exchanges with the reader, including
+the application-layer GATT writes/notifications on the data characteristic.
+
+Capture: on the phone, Developer options → **Enable Bluetooth HCI snoop log**;
+run a Reader Manager management session against the reader; then pull the log
+(a full bug report, or `adb pull` of the btsnoop file). `iOS` equivalent: the
+Bluetooth logging profile + PacketLogger on macOS.
+
+`hid_rm/btsnoop.py` (+ `parse-snoop` CLI) decodes it: it walks the btsnoop
+records → ACL → L2CAP(ATT) → Write/Notify values, finds the reader's data
+characteristic, reassembles the ProtocolV1 fragments, and decodes each message
+with the existing logic — SELECT AID/ADF, the SEOS authenticate (AKE), and the
+SNMP GET/SET carriers. What it yields depends on the SNMP security level:
+- **authNoPriv** → the scopedPDU (config OIDs *and values*) is cleartext: you
+  read exactly which settings the phone reads/writes (the enabled settings!).
+- **authPriv** → the USM header (engineId/boots/time/username) is cleartext and
+  the payload is AES-encrypted; supply the priv key to decrypt, otherwise the
+  captured authenticated SET messages are **replayable via `config-apply`**
+  (they are already MAC'd/encrypted by the phone) — a real "manage without the
+  app" path fed by observed traffic, subject to the SNMPv3 freshness window.
+Either way it also captures the **SEOS admin AKE**, finally letting that
+handshake (unreachable from our side) be characterized from real traffic.

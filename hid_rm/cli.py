@@ -15,6 +15,7 @@ Offline (no reader):
   python -m hid_rm.cli tech <leak_report.json>       # credential technologies (KeyType terms)
   python -m hid_rm.cli settings [category]            # list reader config settings (name<->OID)
   python -m hid_rm.cli fuzz-list                      # list robustness cases
+  python -m hid_rm.cli parse-snoop <btsnoop> [authkey] [privkey]  # decode a phone<->reader HCI snoop
 
 Live over BLE (needs `bleak`):
   python -m hid_rm.cli scan
@@ -599,6 +600,13 @@ def main(argv):
     elif cmd == "settings":
         from . import config_oids
         print(config_oids.render_catalog(a[0] if a else None))
+    elif cmd == "parse-snoop":
+        # parse-snoop <btsnoop_file> [authkey_hex] [privkey_hex]
+        from . import btsnoop
+        data = open(a[0], "rb").read()
+        ak = bytes.fromhex(a[1]) if len(a) > 1 else None
+        pk = bytes.fromhex(a[2]) if len(a) > 2 else None
+        print(btsnoop.render(btsnoop.decode_session(data, auth_key=ak, priv_key=pk)))
     elif cmd == "fuzz-list":
         for name, frags, note in fuzz.cases():
             print(f"{name:32} {sum(len(f) for f in frags):4}B  {note}")
