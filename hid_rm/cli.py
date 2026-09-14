@@ -623,6 +623,36 @@ def main(argv):
         ak = bytes.fromhex(a[1]) if len(a) > 1 else None
         pk = bytes.fromhex(a[2]) if len(a) > 2 else None
         print(btsnoop.render(nrf_sniffer.decode_raw(a[0], auth_key=ak, priv_key=pk)))
+    elif cmd == "decode-session":
+        # decode-session <rawfile>   full layered decode + config table
+        from . import nrf_sniffer, framing, session_decode as SD
+
+        def _walk(path):
+            bufs = {"tx": [], "rx": []}
+            for line in open(path):
+                line = line.strip()
+                if not line:
+                    continue
+                att = nrf_sniffer._att_from_data_pdu(bytes.fromhex(line))
+                if not att or len(att) < 3:
+                    continue
+                op = att[0]
+                d = "rx" if op == 0x1B else ("tx" if op in (0x52, 0x12) else None)
+                if d is None:
+                    continue
+                v = att[3:]
+                if not v:
+                    continue
+                hdr = v[0]
+                if (hdr & 0xE0) == 0xE0:
+                    bufs[d] = []
+                    continue
+                bufs[d].append(v)
+                if hdr == 0xC0 or hdr == 0x40:
+                    yield d, framing.ble_reassemble(bufs[d]); bufs[d] = []
+
+        evs = SD.decode_events(_walk(a[0]))
+        print(SD.render_config(SD.config_report(evs)))
     elif cmd == "fuzz-list":
         for name, frags, note in fuzz.cases():
             print(f"{name:32} {sum(len(f) for f in frags):4}B  {note}")
