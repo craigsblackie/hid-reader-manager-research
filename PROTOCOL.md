@@ -1133,3 +1133,35 @@ link kept) or drops the link, and never crashed or rebooted under fuzzing —
 consistent with the earlier NFC fuzz result (§10/§16). No availability/DoS beyond
 the connection-lockout already noted (§18). The firmware/config extension frames
 (`0xE2`/`0xE5`) were deliberately NOT fuzzed (potentially destructive).
+
+## 28. Careful e1 05 (FRAG_TIMEOUT) probe + corrected BLE exchange
+
+Status codes decoded from the reader (seos.EOT_STATUS): **`e1 02` = SAM_REJECTED**,
+**`e1 05` = FRAG_TIMEOUT**, **`e1 06` = MSG_TIMEOUT**.
+
+### e1 05 / FRAG_TIMEOUT — probed carefully, no opening
+- An incomplete fragment (InitialWithMore that never completes, or an
+  Intermediate without an Initial) makes the reader emit **`e1 05` after ~0.7 s**
+  and **keep the link** — it tolerates the incomplete fragment and waits.
+- But **completing that message with a real command** (a `CLA=80 INS=15`
+  CORE_ADMIN APDU) → the reader **disconnects**; and a read-only `0xE5`
+  CONFIGURATION `GET_PROPERTIES` (`84 00`) extension frame → **immediate
+  disconnect**. So FRAG_TIMEOUT tolerance is just reassembly patience, not an
+  exploitable state: the reader still rejects any unsolicited command from an
+  unauthenticated party. (Firmware `0xE2` extension frames deliberately not
+  tested.)
+
+### Corrected: the config leak DOES work over BLE (richer than NFC)
+Earlier manual probes with a bare `9000` response failed to advance the reader —
+but the reader needs a proper SELECT FCI (`6F … 84 <AID> A5 02 40 00`, the `A5`
+proprietary template). With that (what `emulate.CardEmulationResponder` sends),
+the full BLE exchange is:
+`SELECT STANDARD_SEOS` → `SELECT ADF` (**6 credential PACS OIDs**:
+`…24.1.6.1.1.10664`, `…24.1.1.11571.{1,2,7}`, `…24.1.1.163.11433.{1,2}`) →
+`SELECT MOBILE_SEOS_ADMIN_CARD` → `SELECT ADF` (**admin OIDs**,
+`…24.1.1.163.11433.1` branch) → `SELECT OPERATION_SELECTOR` → **SAM_REJECTED**.
+So over BLE the reader discloses its *complete* configured ADF list (both the
+credential and admin trees) unauthenticated — more than the NFC capture showed —
+but never initiates the SEOS AKE without a real credential (it SAM-rejects after
+the discovery scan). The AKE challenge is therefore not reachable from either
+transport without valid credential keys.
