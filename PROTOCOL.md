@@ -1528,3 +1528,34 @@ always recovers healthy):**
 **Repro:** `tools/fuzz_ext_reboot.py <MAC> E28400` (0xE2), `... E101` (0xE1),
 `... E08400` (0xE0 control). All three leave the reader advertising again and the
 config leak (§8) working normally afterward — a watchdog-style reboot, not a brick.
+
+## §37 — Third crash surface: the management tunnel (SNMPv3) reboots on a malformed command
+
+Beyond the two extension-frame reboots (§35/§36), the **Artemis/SNMP management
+tunnel** is a third, independent sub-protocol that reboots the reader.
+
+**The finding.** Engage the tunnel the usual unauthenticated way (reply `FCI_OK`
+= `6f0885060201400201009000` to the `OPERATION_SELECTOR` AID
+`a000000382002f000101`; the reader then sends its `PUT_DATA` session-setup and a
+`GET_DATA` (`0xCA`) poll asking for the next command). Now reply to that
+`GET_DATA` poll with a **malformed SNMPv3 command** (e.g. a `GET` whose BER
+SEQUENCE length byte is invalid, a `GET` with an over-large OID, or a `PUT` with
+a 120-byte value). The reader re-offers the `OPERATION_SELECTOR` (retries the
+tunnel), then **drops the link** (GATT disconnect) and goes dark — a reboot.
+
+**Why it's distinct from §35/§36.** This is a different layer entirely:
+- §35/§36: the 1-byte-header *extension* frames (`0xE2` FW_UPDATE, `0xE1` EOT).
+- §37: the `[len][APDU][CRC]`-framed *Artemis/SNMP* `GET_DATA`/`PUT_DATA`
+  channel (the one that carries all reader config, §30-§33). A malformed SNMPv3
+  command on this channel reboots the reader — so the tunnel's SNMPv3 parser /
+  command dispatcher is a genuine unauthenticated crash surface, not just the
+  extension-frame handlers.
+
+**Repro.** `tools/tunnel_crash.py <MAC> <case>` where `<case>` is one of `badber`
+/ `hugeoid` / `puthuge` / `recur`. All leave the reader advertising again and the
+config leak (§8) working normally afterward — a watchdog-style reboot, not a brick.
+
+**Caveat (reader's own dark/up cycle, §36).** The reader spends most of its time
+dark in ~7-9 min windows with brief up-windows, so per-case "reboot vs. natural
+dark" attribution is approximate; the **link-drop** (GATT disconnect) is the
+reliable signal that distinguishes these crashes from the reader's own cycling.
