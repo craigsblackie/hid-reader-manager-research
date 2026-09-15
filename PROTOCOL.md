@@ -1439,3 +1439,51 @@ actually detected live and unauthenticated (SEOS, DESFire EV3, EM prox) are
 labelled `[DETECTED live, unauthenticated]`; iCLASS/iCLASS SE are labelled
 `[OWNER-CONFIRMED, not live-verified]` -- reported because the owner told us,
 never conflated with something this tool independently proved.
+
+## §35 — Crash/reboot found: a single `0xE2` (FW_UPDATE) extension frame reboots the reader
+
+**The finding.** A single unauthenticated BLE write — the extension frame
+`0xE2` (FW_UPDATE) carrying the `REQUEST_INIT_FLASH` payload (`84 00`), i.e. the
+3-byte frame **`E2 84 00`** written to the data characteristic — makes the reader
+reply `E1 0A` (**EOT status=CONFIG_FORBIDDEN**) and then **stop advertising for
+~50–90 seconds before coming back**: a reboot (watchdog reset / DFU timeout), not
+a brick.
+
+Reproduced **3× cleanly**, each time with the identical sequence:
+1. reader up → connect → spontaneous `SELECT` (STANDARD_SEOS AID)
+2. send one `E2 84 00` frame
+3. reader replies `e1 0a` (CONFIG_FORBIDDEN)
+4. reader goes **DARK** (stops advertising) for 50–90s
+5. reader re-advertises as `Seos` and is **fully functional** again (config leak
+   still works: 4 credential profiles, `SAM_REJECTED`)
+
+**Why it's a genuine code path (not dead code).** Unlike `0xE5` (CONFIGURATION)
+in §11 — which the reader recognizes but treats as a no-op (`MSG_TIMEOUT`) and
+which static analysis shows is declared-but-never-called — `0xE2` (FW_UPDATE) is
+the path the real app *actively uses* (`SendBleFragmentV2(REQUEST_INIT_FLASH,
+REQUEST_INIT_FLASH_ACK)`, §11). The `e1 0a` CONFIG_FORBIDDEN reply confirms the
+reader **entered the FW_UPDATE handler and rejected the unauthenticated
+flash-init**; the reboot happens *while handling/rejecting* that frame.
+
+**Classification.** Availability / crash (reboot-on-unexpected-frame). Unauthenticated
+— no credential, tunnel, or SNMP session required: connect, write one 3-byte frame.
+This is the cleanest single-frame crash found in this project (previous fuzz
+rounds in §10/§27 left the reader up every time).
+
+**Repro.** `tools/fuzz_fwupdate_crash.py <MAC>` (minimal: connect, send one
+`seos.ext_frame(2, seos.REQUEST_INIT_FLASH)` = `E2 84 00`, watch the `e1 0a`
+reply and the advertising gap) or `tools/fuzz_fwupdate.py <MAC>` (full sequence
++ state check).
+
+**Open follow-ups.**
+- Exact frame that reboots: confirmed for `REQUEST_INIT_FLASH` (`84 00`). The
+  first full run also showed `E2` + empty / `84 00` variants reaching the same
+  `e1 0a` before the reboot; the 20-byte-garbage variant dropped the link
+  mid-exchange. Worth isolating whether *any* `0xE2` payload reboots, or only
+  the `REQUEST_INIT_FLASH` one.
+- Whether the reboot is a watchdog reset (recoverable) vs. a DFU/flash state the
+  reader times out of — the reader always recovered, so it behaves like a
+  watchdog reset on the unauthenticated-reject path.
+- Interaction with the §18 lockout: the dark/reboot gap and the §18
+  connect-then-`MSG_TIMEOUT` lockout are different modes (dark vs. advertising-
+  but-rejecting); worth checking whether a reboot also clears the lockout.
