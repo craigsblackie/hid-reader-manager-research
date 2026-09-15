@@ -1487,3 +1487,44 @@ reply and the advertising gap) or `tools/fuzz_fwupdate.py <MAC>` (full sequence
 - Interaction with the §18 lockout: the dark/reboot gap and the §18
   connect-then-`MSG_TIMEOUT` lockout are different modes (dark vs. advertising-
   but-rejecting); worth checking whether a reboot also clears the lockout.
+
+## §36 — More crash/reboot surfaces + the reader's dark-cycle confound
+
+Continuing the crash hunt from §35, two more unauthenticated single-frame reboot
+surfaces, plus an important observation that confounds per-frame attribution.
+
+**Surface — 0xE1 (END_OF_TRANSACTION) sent central→reader.** Throughout this
+research we only ever *received* `0xE1` (the reader's status/EOT frame). Sending a
+`0xE1` + status byte to the data characteristic (the phone→reader direction we'd
+never tried) makes the reader **drop the link** (GATT disconnect) and go dark
+(reboot). Observed with status `01` (SUCCESS) and `02` (SAM_REJECTED); the reply is
+the link itself disappearing (no clean EOT back to us).
+
+**Surface — 0xE0 (raw) / other extension types (control).** `0xE0` + payload is
+silently ignored (no reply, reader stays up), consistent with it not being a
+recognized extension type on this firmware. So it is specifically the **`0xE2`
+(FW_UPDATE)** and **`0xE1` (EOT)** frame types that reboot — the two extension
+types the reader has a real handler for (per §11, `0xE5` CONFIGURATION is also
+recognized but is dead code → `MSG_TIMEOUT`, no reboot).
+
+**The reader's own dark/up cycle (a confound, not necessarily a bug).** Through
+§35–§36 the reader spends most of its time **dark** (not advertising) in ~7-9
+minute windows, with brief up-windows (~10-30 s) between them. This happens with
+*zero* connections (observed cycling while we only scanned), so it's independent of
+our probes — consistent with a door-reader power-save cycle (door state / battery
+/ a scheduled power cycle) rather than our probes.
+
+**Net: three unauthenticated single-frame reboot triggers, all clean (the reader
+always recovers healthy):**
+- `0xE2` (FW_UPDATE) + any payload (e.g. `E2 84 00`, `E2 8C 00`) -> `EOT
+  CONFIG_FORBIDDEN` reply, then reboot. *(most reproducible — distinct reply
+  signature)*
+- `0xE1` (EOT status) + any status -> link-drop, then reboot. *(reproduced; the
+  reader's own dark-cycle confounds clean per-status attribution)*
+- `0xE0`/other extension types -> no reply, reader stays up (control: it is the two
+  handled types, `0xE2`/`0xE1`, that reboot; `0xE5` per §11 is recognized but dead
+  code -> `MSG_TIMEOUT`).
+
+**Repro:** `tools/fuzz_ext_reboot.py <MAC> E28400` (0xE2), `... E101` (0xE1),
+`... E08400` (0xE0 control). All three leave the reader advertising again and the
+config leak (§8) working normally afterward — a watchdog-style reboot, not a brick.
