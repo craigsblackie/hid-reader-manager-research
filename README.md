@@ -23,7 +23,14 @@ keys are cloud-issued per organisation.
   OID/AID decoder (`leak.py`, `oid.py`, `oid_db.py`), a card-emulation responder
   (`emulate.py`), a corrected robustness/fuzz harness (`fuzz.py`), a unified
   recon command (`recon.py`), and a Flipper Zero serial-CLI bridge
-  (`flipper_cli.py`). Entry point: `python -m hid_rm.cli --help`.
+  (`flipper_cli.py`). Entry point: `python -m hid_rm.toolkit --help` — a single
+  cohesive CLI grouping everything into DISCOVERY (scan/probe/leak/enumerate/
+  emulate), INSPECT (offline payload preview, decoders, settings catalog),
+  DRIVE (core/locate/send/fuzz), CRASH (`crash e2|e1|tunnel` — the three
+  confirmed reboot triggers from `PROTOCOL.md` §35–§37, each with a
+  reboot-watch), REBOOT (reboot/watch, handling the reader's natural dark/up
+  power-save cycle, §36), and CONFIG (authenticated SNMPv3 get/set/probe/apply).
+  The original flat CLI remains at `python -m hid_rm.cli --help`.
 - **[`flipper_app/`](flipper_app/)** — a from-scratch Flipper Zero application
   (`hid_recon.c`, built against Momentum firmware's `ufbt` SDK) implementing the
   same protocol logic as a real ISO14443-4A NFC card-emulation listener, so
@@ -52,6 +59,11 @@ keys are cloud-issued per organisation.
   analysis, the `.NET` assembly store format (XABA/LZ4), hardcoded
   analytics/Firebase secrets found in the shipped app, and the full sequence of
   static-analysis findings that fed into `PROTOCOL.md`.
+- **[`tools/`](tools/)** — standalone single-purpose repros of the confirmed
+  crash/reboot surfaces (PROTOCOL.md §35–§37): `fuzz_fwupdate_crash.py`
+  (0xE2 FW_UPDATE), `fuzz_ext_reboot.py` (0xE1 EOT / 0xE0 control), and
+  `tunnel_crash.py` (management-tunnel SNMPv3). `hid_rm.toolkit` wraps the
+  same byte sequences under `crash e2|e1|tunnel`.
 - **[`leak_reports/`](leak_reports/)** — example output from live runs against
   the author's own reader (both the Python/BLE and Flipper/NFC paths),
   demonstrating the unauthenticated config-disclosure finding.
@@ -80,6 +92,12 @@ is the normal form for publishing this kind of research.
 - A from-scratch Flipper Zero NFC implementation of the same protocol logic
   independently reproduced the BLE-derived findings against the same physical
   reader — two unrelated code paths, two different radios, identical result.
+- **Three confirmed unauthenticated reboot triggers** — the 0xE2 FW_UPDATE frame
+  (§35), the 0xE1 EOT-status frame (§36), and a malformed SNMPv3 command in the
+  management tunnel (§37) — each reboots the reader, which then recovers fully
+  functional (a watchdog-style reboot, not a brick). All three are one command
+  away: `python -m hid_rm.toolkit crash e2|e1|tunnel` (each waits for the
+  reader's up-window, fires the trigger, and watches the reboot dark-gap).
 
 ## Disclosure
 
